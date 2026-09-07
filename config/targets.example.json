@@ -1,0 +1,15 @@
+{
+  "_note": "같은 상품을 판 여러 방송을 한 번에 수집·비교하기 위한 대상 목록입니다. DataHub 웹 URL을 그대로 붙여넣어도 됩니다.",
+  "product_name": "로보락 S9 MAX Ultra",
+  "lexicons": ["core_ko", "product_robot_vacuum"],
+  "targets": [
+    {
+      "channel_name": "GS SHOP",
+      "url": "https://datahub.hsmoa.com/product/gsshop_1101476773?tv_channel=gsmyshop&start_datetime=2026-09-04T20%3A38%3A00%2B09%3A00&end_datetime=2026-09-04T21%3A38%3A00%2B09%3A00&tab=subtitle"
+    },
+    {
+      "channel_name": "여기에 CJ온스타일 같은 다른 채널의 같은 상품 방송 URL을 추가하세요",
+      "url": ""
+    }
+  ]
+}

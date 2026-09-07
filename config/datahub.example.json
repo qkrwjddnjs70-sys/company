@@ -1,0 +1,52 @@
+{
+  "_note": [
+    "DataHub 공식 API 스펙을 아직 확인하지 못해 아래 경로/필드명은 '추정값'입니다.",
+    "발급받은 API 문서에 맞춰 endpoints.path, endpoints.query, mapping.*_paths 를 고치세요.",
+    "코드는 건드릴 필요 없습니다. *_paths 는 후보를 순서대로 시도하므로 여러 개 적어두면 됩니다.",
+    "이 파일을 config/datahub.json 으로 복사한 뒤 수정하세요."
+  ],
+  "base_url": "https://datahub.hsmoa.com",
+  "api_key_env": "HSMOA_DATAHUB_API_KEY",
+  "auth": {
+    "type": "header",
+    "header": "Authorization",
+    "value_template": "Bearer {api_key}",
+    "extra_headers": {}
+  },
+  "timeout_sec": 30.0,
+  "max_retries": 4,
+  "rate_limit_sec": 0.5,
+  "cache_dir": ".cache/datahub",
+  "endpoints": {
+    "product": {
+      "path": "/api/v1/product/{product_key}",
+      "query": {
+        "tv_channel": "{tv_channel}",
+        "start_datetime": "{start_datetime}",
+        "end_datetime": "{end_datetime}"
+      }
+    },
+    "subtitle": {
+      "path": "/api/v1/product/{product_key}/subtitle",
+      "query": {
+        "tv_channel": "{tv_channel}",
+        "start_datetime": "{start_datetime}",
+        "end_datetime": "{end_datetime}"
+      }
+    }
+  },
+  "mapping": {
+    "segments": {
+      "list_paths": ["data.subtitles", "data.items", "subtitles", "data", "items", "results"],
+      "text_paths": ["text", "subtitle", "content", "caption", "message"],
+      "start_paths": ["start_sec", "start_time", "startTime", "start", "offset", "datetime", "broadcast_datetime"],
+      "end_paths": ["end_sec", "end_time", "endTime", "end"],
+      "speaker_paths": ["speaker", "host", "speaker_name"]
+    },
+    "broadcast": {
+      "product_name_paths": ["data.product_name", "data.name", "product_name", "name", "title"],
+      "price_paths": ["data.price", "data.sale_price", "price", "sale_price"],
+      "channel_name_paths": ["data.channel_name", "data.tv_channel_name", "channel_name"]
+    }
+  }
+}
