@@ -39,7 +39,12 @@ def to_seconds(value: Any, *, origin: datetime | None = None) -> float:
 
 
 def dig(obj: Any, path: str | None, default: Any = None) -> Any:
-    """'data.items.0.text' 같은 점 표기 경로로 중첩 구조를 조회한다."""
+    """'data.items.0.text' 같은 점 표기 경로로 중첩 구조를 조회한다.
+
+    빈 문자열과 '(root)'는 루트 자신을 가리킨다(응답 최상위가 배열인 경우).
+    """
+    if path in ("", "(root)"):
+        return obj
     if not path:
         return default
     cur = obj

@@ -65,25 +65,47 @@ class DataHubClient:
 
     def __init__(self, config: DataHubConfig | None = None, *, api_key: str | None = None):
         self.cfg = config or DataHubConfig.load()
-        self.api_key = api_key or os.environ.get(self.cfg.api_key_env, "")
+        env_name = (self.cfg.auth or {}).get("cookie_env") or self.cfg.api_key_env
+        self.api_key = api_key or os.environ.get(env_name, "")
+        self._credential_env = env_name
         self._last_call = 0.0
         if self.cfg.cache_dir:
             os.makedirs(self.cfg.cache_dir, exist_ok=True)
 
     # ---------- 저수준 ----------
+    @staticmethod
+    def _canon(key: str) -> str:
+        """HTTP 헤더 키를 Title-Case로 통일한다.
+
+        urllib은 키를 capitalize()로 정규화하므로 'user-agent'와 'User-Agent'가
+        같은 헤더로 충돌한다. 미리 통일해 설정 값이 명확히 기본값을 덮게 한다.
+        """
+        return "-".join(w.capitalize() for w in key.split("-"))
+
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/json", "User-Agent": "hsbot/0.1"}
         auth = self.cfg.auth or {}
-        if auth.get("type") == "header":
-            if not self.api_key:
-                raise DataHubError(
-                    f"API 키가 없습니다. 환경변수 {self.cfg.api_key_env} 를 설정하세요."
-                )
+        kind = auth.get("type")
+        if kind == "header":
+            self._require_credential("API 키")
             h[auth.get("header", "Authorization")] = auth.get(
                 "value_template", "Bearer {api_key}"
             ).format(api_key=self.api_key)
-        h.update(auth.get("extra_headers", {}) or {})
+        elif kind == "cookie":
+            # 브라우저 로그인 세션을 그대로 쓰는 경로. 쿠키는 만료되므로
+            # 401/403이 나면 F12에서 다시 복사해야 한다.
+            self._require_credential("로그인 쿠키")
+            h["Cookie"] = self.api_key
+        for k, v in (auth.get("extra_headers", {}) or {}).items():
+            h[self._canon(k)] = v
         return h
+
+    def _require_credential(self, what: str) -> None:
+        if not self.api_key:
+            raise DataHubError(
+                f"{what}이(가) 없습니다. 환경변수 {self._credential_env} 를 설정하세요.\n"
+                f'  예) export {self._credential_env}="$(cat .secrets/datahub.cookie)"'
+            )
 
     def _url(self, name: str, params: dict[str, Any]) -> str:
         ep = self.cfg.endpoints.get(name)
@@ -132,6 +154,13 @@ class DataHubClient:
                 return data
             except urllib.error.HTTPError as e:
                 # 4xx는 재시도해도 소용없다 (429 제외)
+                if e.code in (401, 403):
+                    raise DataHubError(
+                        f"HTTP {e.code} {e.reason} — 인증 실패입니다.\n"
+                        f"  쿠키 인증이라면 세션이 만료됐을 가능성이 큽니다. "
+                        f"F12에서 다시 복사한 뒤 {self._credential_env} 를 갱신하세요.\n"
+                        f"  요청: {url}"
+                    ) from e
                 if e.code != 429 and 400 <= e.code < 500:
                     raise DataHubError(f"HTTP {e.code} {e.reason} — {url}") from e
                 last_err = e

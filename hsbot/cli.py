@@ -20,6 +20,7 @@ from .metrics import analyze as analyze_one
 from .models import Broadcast, load_broadcasts, save_broadcasts
 from .sources.datahub import DataHubClient, DataHubConfig, DataHubError, parse_datahub_url
 from .sources.paste import load_paste_file
+from .sources import devtools as dt
 
 
 def _expand(paths: list[str]) -> list[str]:
@@ -142,6 +143,77 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def _print_candidate(c, indent: str = "      ") -> None:
+    print(f"{indent}배열 경로 : {c.path}  ({c.length}개, 점수 {c.score})")
+    print(f"{indent}본문 필드 : {c.text_keys or '못 찾음'}")
+    print(f"{indent}시각 필드 : {c.time_keys or '못 찾음'}")
+    if c.speaker_keys:
+        print(f"{indent}화자 필드 : {c.speaker_keys}")
+    sample = json.dumps(c.sample, ensure_ascii=False)
+    print(f"{indent}샘플      : {sample[:180]}{'...' if len(sample) > 180 else ''}")
+
+
+def cmd_devtools(args) -> int:
+    """F12 산출물(HAR / Copy as cURL)에서 API 스펙을 역추적한다."""
+    url = headers = None
+    candidate = body = None
+
+    if args.har:
+        hits = dt.scan_har(args.har, min_score=args.min_score)
+        if not hits:
+            print(
+                "자막처럼 보이는 JSON 응답을 찾지 못했습니다.\n"
+                "  · Network 탭에서 Fetch/XHR 필터를 켜고 자막 탭을 실제로 눌러본 뒤 HAR을 저장했는지 확인하세요.\n"
+                "  · 응답 본문이 HAR에 포함되지 않은 경우도 있습니다(Chrome: 'Preserve log' 켜기).\n"
+                f"  · 임계값을 낮춰 다시 보려면 --min-score 1 을 주세요.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"자막 후보 응답 {len(hits)}건 (점수순)\n")
+        for i, h in enumerate(hits[: args.limit]):
+            print(f"  [{i}] {h.method} {h.status}  {h.url[:150]}")
+            _print_candidate(h.candidates[0])
+            print()
+        pick = hits[min(args.pick, len(hits) - 1)]
+        url, headers, candidate = pick.url, pick.headers, pick.candidates[0]
+        body = pick.body
+        print(f"→ [{min(args.pick, len(hits) - 1)}]번을 기준으로 설정을 만듭니다.")
+
+    elif args.curl:
+        with open(args.curl, encoding="utf-8") as f:
+            req = dt.parse_curl(f.read())
+        url, headers = req.url, req.headers
+        print(f"요청  : {req.method} {req.path}")
+        print(f"호스트: {req.base_url}")
+        print(f"쿼리  : {json.dumps(req.query, ensure_ascii=False)}")
+        print(f"쿠키  : {'있음' if req.cookie else '없음'}")
+        print("\n  ※ cURL만으로는 응답 스키마를 알 수 없습니다. "
+              "필드 자동 추론까지 원하면 --har 을 쓰세요.")
+    else:
+        print("--har 또는 --curl 중 하나가 필요합니다.", file=sys.stderr)
+        return 2
+
+    cookie = (headers or {}).get("cookie")
+    if cookie and not args.no_cookie:
+        path = dt.save_cookie(cookie, args.cookie_out)
+        print(f"\n쿠키 저장: {path}  (권한 0600, .gitignore 처리됨)")
+        print(f'  export HSMOA_DATAHUB_COOKIE="$(cat {path})"')
+
+    cfg = dt.build_config(url, headers or {}, candidate, product_key=args.product_key, body=body)
+    _ensure_parent(args.out_config)
+    if os.path.exists(args.out_config) and not args.force:
+        print(f"\n[중단] {args.out_config} 가 이미 있습니다. 덮어쓰려면 --force 를 주세요.", file=sys.stderr)
+        return 1
+    with open(args.out_config, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    print(f"설정 생성: {args.out_config}")
+    print("\n다음 단계:")
+    print(f"  1) {args.out_config} 의 endpoints/mapping 을 눈으로 검토")
+    print("  2) export HSMOA_DATAHUB_COOKIE=\"$(cat .secrets/datahub.cookie)\"")
+    print("  3) python3 -m hsbot fetch --targets config/targets.json --out data/broadcasts.json")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hsbot", description="홈쇼핑 방송 화법 비교 분석기")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -181,6 +253,21 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--title", default=None)
     a.add_argument("--source-note", default="")
     a.set_defaults(func=cmd_analyze)
+
+    d = sub.add_parser("devtools", help="F12 HAR/cURL에서 API 스펙 역추적 + 설정 생성")
+    g = d.add_mutually_exclusive_group(required=True)
+    g.add_argument("--har", help="DevTools Network 탭에서 저장한 .har 파일")
+    g.add_argument("--curl", help="'Copy as cURL (bash)' 내용을 담은 텍스트 파일")
+    d.add_argument("--product-key", default=None, help="예: gsshop_1101476773 (경로 템플릿화에 사용)")
+    d.add_argument("--out-config", default="config/datahub.json")
+    d.add_argument("--cookie-out", default=os.path.join(".secrets", "datahub.cookie"))
+    d.add_argument("--no-cookie", action="store_true", help="쿠키를 저장하지 않음")
+    d.add_argument("--min-score", type=float, default=3.0)
+    d.add_argument("--limit", type=int, default=5, help="후보를 몇 개까지 출력할지")
+    d.add_argument("--pick", type=int, default=0, help="설정 생성에 쓸 후보 번호")
+    d.add_argument("--force", action="store_true", help="기존 설정 덮어쓰기")
+    d.set_defaults(func=cmd_devtools)
+
     return p
 
 

@@ -20,10 +20,46 @@ python3 -m unittest discover -s tests
 
 ## 실제 데이터 연결
 
-### 1) DataHub API (권장)
+### 1) F12 개발자도구로 스펙 역추적 (문서 없이 시작할 때)
 
-**API 스펙(엔드포인트 경로·응답 필드명·자막 제공 여부)은 아직 미확인이다.**
-그래서 경로와 필드명을 코드가 아니라 설정으로 뺐다. 문서를 받으면 JSON만 고치면 된다.
+공식 API 문서가 없어도, 브라우저가 실제로 보내는 요청을 관찰하면 연동할 수 있다.
+**쿠키만으로는 부족하다.** 인증(쿠키)과 스펙(엔드포인트+응답 구조) 둘 다 필요하고,
+스펙은 Network 탭에만 있다.
+
+```
+1. 로그인 상태로 자막 탭이 있는 방송 페이지를 연다
+2. F12 → Network → Fetch/XHR 필터 → Preserve log 체크 → 새로고침 후 자막 탭 클릭
+3. 우클릭 → "Save all as HAR with content" 로 저장
+4. python3 -m hsbot devtools --har page.har --product-key gsshop_1101476773
+```
+
+`devtools`가 하는 일:
+
+| 단계 | 내용 |
+|---|---|
+| 자막 응답 탐지 | HAR의 모든 JSON 응답을 훑어 "시각 필드 + 한글 본문 배열"을 점수화. 배너·광고 응답은 걸러짐 |
+| 스키마 추론 | 배열 경로, 본문/시작/종료/화자 필드명을 자동 판별 (화자 컬럼이 본문으로 오인되지 않게 분리) |
+| 메타 추론 | 상품명·가격·채널명 경로를 자막 배열 바깥에서 탐색 |
+| 설정 생성 | `config/datahub.json` 초안 작성. 경로·쿼리를 `{product_key}` `{start_datetime}` 등으로 템플릿화 |
+| 쿠키 분리 | 쿠키를 **설정 파일에 절대 쓰지 않고** `.secrets/datahub.cookie` (0600, gitignore)로 분리 |
+
+```bash
+export HSMOA_DATAHUB_COOKIE="$(cat .secrets/datahub.cookie)"
+python3 -m hsbot fetch --targets config/targets.json --out data/broadcasts.json
+```
+
+Copy as cURL만 있는 경우 `--curl req.txt` 도 되지만, 응답 본문이 없어 **필드 추론은 안 된다**
+(엔드포인트·쿠키만 파악).
+
+쿠키 사용 시 유의점:
+
+- **쿠키는 비밀번호와 같다.** 저장소·설정 파일·채팅에 붙여넣지 말 것. `.secrets/`와 `*.har`은 gitignore 처리돼 있다.
+- **만료된다.** 401/403이 나면 세션이 끊긴 것이다. F12에서 다시 복사하면 된다(오류 메시지가 안내한다).
+- **본인 계정 범위에서만.** 자동 수집은 서비스 이용약관 확인 후 진행하고, `rate_limit_sec`(기본 1초)을 낮추지 말 것.
+
+### 2) DataHub 공식 API (문서를 받은 경우)
+
+경로와 필드명은 코드가 아니라 설정에 있다. 문서를 받으면 JSON만 고치면 된다.
 
 ```bash
 cp config/datahub.example.json config/datahub.json
@@ -40,7 +76,7 @@ python3 -m hsbot analyze --input data/broadcasts.json \
 `mapping.*_paths` 는 **후보 경로 목록**이다. 순서대로 시도하므로 확실치 않으면 여러 개 적어두면 된다.
 경로를 하나도 못 찾으면 조용히 0줄로 넘어가지 않고 오류로 알린다(빈 배열과 구분).
 
-### 2) 붙여넣기 (API에 자막이 없을 때의 대안)
+### 3) 붙여넣기 (API·쿠키 둘 다 막혔을 때)
 
 DataHub 자막 탭 내용을 텍스트 파일로 저장한 뒤:
 
@@ -101,11 +137,12 @@ hsbot/
   metrics.py       방송 1건 정량화
   compare.py       채널 간 비교, 차별 표현(로그오즈비)
   report.py        다크모드 HTML 리포트
-  cli.py           url / fetch / paste / analyze
+  cli.py           url / devtools / fetch / paste / analyze
   sources/
-    datahub.py     DataHub API 어댑터 (설정 주도)
+    datahub.py     DataHub API 어댑터 (설정 주도, API키·쿠키 인증)
+    devtools.py    HAR/cURL 역추적, 스키마 추론, 설정 생성
     paste.py       붙여넣기 텍스트 파서
     localjson.py   정규화 JSON 재로딩
 tools/             합성 데이터 생성기, 데모 스크립트
-tests/             30개 회귀 테스트
+tests/             48개 회귀 테스트
 ```
