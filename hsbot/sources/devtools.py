@@ -394,3 +394,66 @@ def save_cookie(cookie: str, path: str = os.path.join(".secrets", "datahub.cooki
         f.write(cookie.strip() + "\n")
     os.chmod(path, 0o600)
     return path
+
+
+# ---------------------------------------------------------------- HAR 직접 추출
+
+def extract_broadcast(
+    hit: "HarHit",
+    *,
+    channel: str | None = None,
+    channel_name: str | None = None,
+    product_name: str | None = None,
+    start_datetime: str | None = None,
+    end_datetime: str | None = None,
+):
+    """HAR 응답 본문에서 곧바로 Broadcast를 만든다.
+
+    HAR에는 응답 본문이 통째로 들어 있으므로 네트워크 요청 없이 분석할 수 있다.
+    시작/종료 시각과 상품키는 관측된 요청 URL의 쿼리에서 최대한 유추한다.
+    """
+    from .datahub import DataHubClient, DataHubConfig   # 순환 import 회피
+
+    if not hit.candidates:
+        raise ValueError("이 응답에서는 자막 배열을 찾지 못했습니다.")
+
+    p = urllib.parse.urlparse(hit.url)
+    query = {k: v[0] for k, v in urllib.parse.parse_qs(p.query).items()}
+    segs = [x for x in p.path.split("/") if x]
+    product_key = next((x for x in reversed(segs) if "_" in x or x.isdigit()), segs[-1] if segs else "unknown")
+
+    def pick(*names: str) -> str | None:
+        for k, v in query.items():
+            lk = k.lower()
+            if any(n in lk for n in names):
+                return v
+        return None
+
+    start = start_datetime or pick("start") 
+    end = end_datetime or pick("end")
+    if not start:
+        raise ValueError(
+            "방송 시작시각을 알 수 없습니다. --start 로 직접 넘겨주세요 "
+            "(예: --start 2026-09-04T20:38:00+09:00)"
+        )
+    if not end:
+        end = start   # duration은 자막 마지막 시각으로 대체된다
+
+    cfg_dict = build_config(hit.url, hit.headers, hit.candidates[0], product_key=product_key, body=hit.body)
+    cfg_dict.pop("_note", None)
+    cfg_dict["cache_dir"] = None
+    client = DataHubClient(DataHubConfig(**cfg_dict), api_key="unused")
+
+    bc = client.to_broadcast(
+        hit.body, hit.body,
+        product_key=product_key,
+        start_datetime=start,
+        end_datetime=end,
+        channel=channel or (product_key.split("_")[0] if "_" in product_key else product_key),
+        product_name=product_name,
+    )
+    if channel_name:
+        bc.channel_name = channel_name
+    bc.source = "har"
+    bc.extra["har_url"] = hit.url
+    return bc

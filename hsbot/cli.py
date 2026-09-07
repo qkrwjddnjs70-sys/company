@@ -193,6 +193,29 @@ def cmd_devtools(args) -> int:
         print("--har 또는 --curl 중 하나가 필요합니다.", file=sys.stderr)
         return 2
 
+    # HAR에는 응답 본문이 들어 있으므로, 네트워크 요청 없이 바로 자막을 뽑을 수 있다.
+    if args.extract:
+        if not args.har:
+            print("--extract 는 --har 과 함께 써야 합니다 (cURL에는 응답 본문이 없습니다).", file=sys.stderr)
+            return 2
+        try:
+            bc = dt.extract_broadcast(
+                pick, channel=args.channel, channel_name=args.channel_name,
+                product_name=args.product, start_datetime=args.start, end_datetime=args.end,
+            )
+        except ValueError as e:
+            print(f"[실패] {e}", file=sys.stderr)
+            return 1
+        print(f"\n[추출] {bc.display_channel} / {bc.product_name}")
+        print(f"       자막 {len(bc.segments)}줄, 편성 {bc.duration_min:.0f}분")
+        for s_ in bc.segments[:3]:
+            print(f"         {s_.start_sec:7.1f}s  {s_.text[:52]}")
+        if len(bc.segments) > 3:
+            print(f"         ... (총 {len(bc.segments)}줄)")
+        _ensure_parent(args.extract)
+        save_broadcasts(args.extract, [bc])
+        print(f"       저장: {args.extract}")
+
     cookie = (headers or {}).get("cookie")
     if cookie and not args.no_cookie:
         path = dt.save_cookie(cookie, args.cookie_out)
@@ -266,6 +289,13 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--limit", type=int, default=5, help="후보를 몇 개까지 출력할지")
     d.add_argument("--pick", type=int, default=0, help="설정 생성에 쓸 후보 번호")
     d.add_argument("--force", action="store_true", help="기존 설정 덮어쓰기")
+    d.add_argument("--extract", default=None, metavar="OUT.json",
+                   help="HAR 본문에서 자막을 바로 추출해 정규화 JSON으로 저장 (네트워크 불필요)")
+    d.add_argument("--channel", default=None)
+    d.add_argument("--channel-name", default=None)
+    d.add_argument("--product", default=None, help="상품명 (미지정 시 응답에서 추론)")
+    d.add_argument("--start", default=None, help="방송 시작 ISO8601 (URL에 없으면 필수)")
+    d.add_argument("--end", default=None)
     d.set_defaults(func=cmd_devtools)
 
     return p

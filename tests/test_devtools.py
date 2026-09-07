@@ -201,3 +201,51 @@ class TestCookieStorage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestHarDirectExtraction(unittest.TestCase):
+    """HAR 본문만으로 네트워크 없이 자막을 뽑을 수 있어야 한다."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "s.har")
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(_har([_entry(SUB_URL, SUB_PAYLOAD, {"Cookie": "SESSION=abc"})]), f,
+                      ensure_ascii=False)
+        self.hit = dt.scan_har(self.path)[0]
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_extracts_segments_and_meta(self):
+        bc = dt.extract_broadcast(self.hit, channel_name="GS SHOP")
+        self.assertEqual(len(bc.segments), 5)
+        self.assertEqual(bc.channel, "gsshop")
+        self.assertEqual(bc.channel_name, "GS SHOP")
+        self.assertEqual(bc.product_name, "로보락 S9 MAX Ultra")
+        self.assertEqual(bc.source, "har")
+        self.assertAlmostEqual(bc.duration_min, 60.0)
+
+    def test_infers_times_from_request_url(self):
+        bc = dt.extract_broadcast(self.hit)
+        self.assertTrue(bc.start_datetime.startswith("2026-09-04T20:38"))
+        self.assertTrue(bc.end_datetime.startswith("2026-09-04T21:38"))
+
+    def test_explicit_args_win_over_url(self):
+        bc = dt.extract_broadcast(self.hit, product_name="직접지정",
+                                  start_datetime="2026-01-01T00:00:00+09:00")
+        self.assertEqual(bc.product_name, "직접지정")
+        self.assertTrue(bc.start_datetime.startswith("2026-01-01"))
+
+    def test_requires_start_when_url_has_none(self):
+        hit = dt.HarHit(url="https://x.invalid/api/sub/gsshop_1", method="GET", status=200,
+                        candidates=self.hit.candidates, headers={}, body=SUB_PAYLOAD)
+        with self.assertRaises(ValueError) as ctx:
+            dt.extract_broadcast(hit)
+        self.assertIn("--start", str(ctx.exception))
+
+    def test_rejects_response_without_candidates(self):
+        hit = dt.HarHit(url=SUB_URL, method="GET", status=200, candidates=[],
+                        headers={}, body=NOISE_PAYLOAD)
+        with self.assertRaises(ValueError):
+            dt.extract_broadcast(hit)

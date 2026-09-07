@@ -43,7 +43,17 @@ python3 -m unittest discover -s tests
 | 설정 생성 | `config/datahub.json` 초안 작성. 경로·쿼리를 `{product_key}` `{start_datetime}` 등으로 템플릿화 |
 | 쿠키 분리 | 쿠키를 **설정 파일에 절대 쓰지 않고** `.secrets/datahub.cookie` (0600, gitignore)로 분리 |
 
+**HAR만 있으면 네트워크 없이 바로 분석된다.** HAR에는 응답 본문이 통째로 들어 있어서
+자막 데이터 자체가 그 안에 있다. 반복 수집이 필요할 때만 쿠키로 API를 호출하면 된다.
+
 ```bash
+# (A) HAR에서 바로 추출 — 쿠키 불필요, 요청 0회
+python3 -m hsbot devtools --har page.har --extract data/gsshop.json \
+        --channel-name "GS SHOP"
+python3 -m hsbot analyze --input "data/*.json" \
+        --lexicon core_ko product_robot_vacuum --html out/report.html
+
+# (B) 같은 설정으로 반복 수집 — 쿠키 필요
 export HSMOA_DATAHUB_COOKIE="$(cat .secrets/datahub.cookie)"
 python3 -m hsbot fetch --targets config/targets.json --out data/broadcasts.json
 ```
@@ -144,5 +154,5 @@ hsbot/
     paste.py       붙여넣기 텍스트 파서
     localjson.py   정규화 JSON 재로딩
 tools/             합성 데이터 생성기, 데모 스크립트
-tests/             48개 회귀 테스트
+tests/             53개 회귀 테스트
 ```
