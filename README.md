@@ -3,10 +3,18 @@
 같은 상품을 여러 홈쇼핑사가 **어떻게 팔았는지** 자막(스크립트)에서 뽑아 숫자로 비교한다.
 
 ```
-자막 수집 ──► 정규화(Broadcast/Segment) ──► 소구축 정량화 ──► 채널 간 비교 ──► HTML 리포트
- DataHub API                                  16개 축              지수·편차·차별표현
- 붙여넣기 텍스트
+키워드 검색 ──► 모델별 묶기 ──► 자막 수집 ──► 정량화 ──► 채널 간 비교 ──► HTML 리포트
+  "로보락"      같은 제품끼리    DataHub API   16개 축    지수·편차·차별표현
+              (제품 차이 배제)  붙여넣기 텍스트
 ```
+
+```bash
+python3 -m hsbot collect "로보락" --since 2026-08-01 --html out/report.html
+```
+
+한 줄이면 검색 → 모델별 묶기 → 자막 수집 → 비교 → 리포트까지 끝난다.
+다만 **최초 1회는 브라우저에서 스펙을 떠 와야 한다**(아래 참조). 공식 API 문서가
+없는 서비스라 엔드포인트·필드명을 코드가 스스로 알 방법이 없기 때문이다.
 
 ## 빠른 시작 (API 키 없이 동작 확인)
 
@@ -20,43 +28,93 @@ python3 -m unittest discover -s tests
 
 ## 실제 데이터 연결
 
-### 1) F12 개발자도구로 스펙 역추적 (문서 없이 시작할 때)
+### 0) 한 번만 하는 준비 — 브라우저에서 스펙 뜨기
 
-공식 API 문서가 없어도, 브라우저가 실제로 보내는 요청을 관찰하면 연동할 수 있다.
-**쿠키만으로는 부족하다.** 인증(쿠키)과 스펙(엔드포인트+응답 구조) 둘 다 필요하고,
-스펙은 Network 탭에만 있다.
+키워드 검색 자동화의 유일한 전제조건이다. **딱 한 번만** 하면 그 뒤로는 명령 한 줄이다.
 
 ```
-1. 로그인 상태로 자막 탭이 있는 방송 페이지를 연다
-2. F12 → Network → Fetch/XHR 필터 → Preserve log 체크 → 새로고침 후 자막 탭 클릭
-3. 우클릭 → "Save all as HAR with content" 로 저장
-4. python3 -m hsbot devtools --har page.har --product-key gsshop_1101476773
+1. 로그인 상태로 사이트에서 "로보락" 을 검색한다
+2. 검색 결과에서 방송 하나를 열고 자막 탭까지 눌러본다   ← 검색+자막 둘 다 관측하려고
+3. F12 → Network → Fetch/XHR 필터 → Preserve log 체크
+4. 우클릭 → "Save all as HAR with content" 로 저장
+5. python3 -m hsbot devtools --har page.har --product-key gsshop_1101476773
 ```
 
-`devtools`가 하는 일:
+**왜 이 단계가 필요한가.** 공식 API 문서가 없는 서비스라 엔드포인트 주소와 응답
+필드명을 코드가 알 방법이 없다. 그리고 **쿠키만으로는 부족하다** — 인증(쿠키)과
+스펙(주소+응답 구조)은 별개이고, 스펙은 Network 탭에만 있다.
+
+`devtools`가 HAR에서 하는 일:
 
 | 단계 | 내용 |
 |---|---|
-| 자막 응답 탐지 | HAR의 모든 JSON 응답을 훑어 "시각 필드 + 한글 본문 배열"을 점수화. 배너·광고 응답은 걸러짐 |
-| 스키마 추론 | 배열 경로, 본문/시작/종료/화자 필드명을 자동 판별 (화자 컬럼이 본문으로 오인되지 않게 분리) |
+| **검색 응답 탐지** | 모든 JSON 응답에서 "상품키 + 상품명 + 절대시각 + 가격" 조합을 점수화해 방송 목록을 찾아냄 |
+| **자막 응답 탐지** | "시각 필드 + 한글 본문 배열"을 점수화. 상품 목록과 헷갈리지 않게 서로를 감점 처리 |
+| 스키마 추론 | 배열 경로와 필드명을 자동 판별. **필드명이 아니라 값의 생김새로** 판정하므로 `goodsNm` `prdKey` `onairStart` 같은 낯선 줄임말도 잡아냄 |
+| 검색어 템플릿화 | 관측된 검색어를 `{keyword}`, 페이지·개수를 `{page}` `{size}` 로 치환 → 다른 키워드에도 재사용 |
 | 메타 추론 | 상품명·가격·채널명 경로를 자막 배열 바깥에서 탐색 |
-| 설정 생성 | `config/datahub.json` 초안 작성. 경로·쿼리를 `{product_key}` `{start_datetime}` 등으로 템플릿화 |
+| 설정 생성 | `config/datahub.json` 초안 작성 (`endpoints.search` + `endpoints.subtitle`) |
 | 쿠키 분리 | 쿠키를 **설정 파일에 절대 쓰지 않고** `.secrets/datahub.cookie` (0600, gitignore)로 분리 |
 
-**HAR만 있으면 네트워크 없이 바로 분석된다.** HAR에는 응답 본문이 통째로 들어 있어서
-자막 데이터 자체가 그 안에 있다. 반복 수집이 필요할 때만 쿠키로 API를 호출하면 된다.
+### 1) 검색 기반 자동 수집 (평상시 쓰는 경로)
 
 ```bash
-# (A) HAR에서 바로 추출 — 쿠키 불필요, 요청 0회
-python3 -m hsbot devtools --har page.har --extract data/gsshop.json \
-        --channel-name "GS SHOP"
+export HSMOA_DATAHUB_COOKIE="$(cat .secrets/datahub.cookie)"
+
+# 어떤 방송이 잡히는지 먼저 확인 (수집은 안 함)
+python3 -m hsbot search "로보락" --since 2026-08-01 --require-keyword
+
+# 검색 → 수집 → 분석 → 리포트까지 한 번에
+python3 -m hsbot collect "로보락" --since 2026-08-01 --html out/report.html
+```
+
+`search` 출력 예:
+
+```
+■ '로보락' 검색 — 원본 11건
+  필터 통과 9건
+
+  [모델별 묶음]  ※ 채널 2곳 이상이어야 비교가 성립합니다
+   ✓ S9 MAX ULTRA           방송  6건 / 채널 4곳  CJ온스타일, GS SHOP, 롯데홈쇼핑, 현대홈쇼핑
+   ✓ Q REVO PRO             방송  2건 / 채널 2곳  CJ온스타일, 롯데홈쇼핑
+   · 로보락 전용 먼지봉투   방송  1건 / 채널 1곳  NS홈쇼핑
+```
+
+**왜 모델별로 묶는가.** "로보락"으로 검색하면 S9 MAX Ultra, Q Revo Pro, 먼지봉투,
+심지어 다른 브랜드까지 섞여 나온다. 이걸 한 표에 올리면 *채널별 화법 차이*가 아니라
+*제품 차이*를 재게 된다. 그래서 모델 단위로 묶고, **2개 채널 이상 겹치는 모델만**
+비교 대상으로 삼는다. 겹치는 채널이 가장 많은 모델이 자동 선택된다(`--model` 로 직접 지정 가능).
+
+선별 옵션:
+
+| 옵션 | 용도 |
+|---|---|
+| `--require KW...` | 상품명에 이 단어가 **모두** 있어야 통과 (`--require S9 Ultra`) |
+| `--require-keyword` | 상품명에 검색어가 실제로 든 것만 — 엉뚱한 브랜드 제거 |
+| `--exclude KW...` | 이 단어가 있으면 제외 (`--exclude 먼지봉투 필터`) |
+| `--channel CH...` | 특정 채널만 (코드·이름 부분일치) |
+| `--since` / `--until` | 방송 시작시각 기준 기간 |
+| `--min-minutes` | 편성 길이 하한 — 짧은 삽입 방송 제외 |
+| `--model` / `--all-models` | 비교할 모델 직접 지정 / 모델 구분 없이 전부(권장 안 함) |
+| `--pages` `--size` | 검색 페이지 수와 페이지당 개수 |
+
+### 2) HAR만으로 (쿠키·네트워크 없이)
+
+HAR에는 응답 본문이 통째로 들어 있어서, 브라우저에서 한 번 검색해두면
+그 결과를 **요청 0회로** 그대로 쓸 수 있다.
+
+```bash
+# 검색 결과를 HAR에서 직접 읽기
+python3 -m hsbot search "로보락" --har search.har --out-targets config/targets.json
+
+# 자막도 HAR에서 직접 추출
+python3 -m hsbot devtools --har page.har --extract data/gsshop.json --channel-name "GS SHOP"
 python3 -m hsbot analyze --input "data/*.json" \
         --lexicon core_ko product_robot_vacuum --html out/report.html
-
-# (B) 같은 설정으로 반복 수집 — 쿠키 필요
-export HSMOA_DATAHUB_COOKIE="$(cat .secrets/datahub.cookie)"
-python3 -m hsbot fetch --targets config/targets.json --out data/broadcasts.json
 ```
+
+다만 **자막은 방송 1건당 HAR 1개**가 필요하다. 방송 수만큼 반복 수집하려면
+결국 쿠키로 API를 호출하는 (1)번 경로를 써야 한다.
 
 Copy as cURL만 있는 경우 `--curl req.txt` 도 되지만, 응답 본문이 없어 **필드 추론은 안 된다**
 (엔드포인트·쿠키만 파악).
@@ -67,7 +125,7 @@ Copy as cURL만 있는 경우 `--curl req.txt` 도 되지만, 응답 본문이 �
 - **만료된다.** 401/403이 나면 세션이 끊긴 것이다. F12에서 다시 복사하면 된다(오류 메시지가 안내한다).
 - **본인 계정 범위에서만.** 자동 수집은 서비스 이용약관 확인 후 진행하고, `rate_limit_sec`(기본 1초)을 낮추지 말 것.
 
-### 2) DataHub 공식 API (문서를 받은 경우)
+### 3) DataHub 공식 API (문서를 받은 경우)
 
 경로와 필드명은 코드가 아니라 설정에 있다. 문서를 받으면 JSON만 고치면 된다.
 
@@ -86,7 +144,7 @@ python3 -m hsbot analyze --input data/broadcasts.json \
 `mapping.*_paths` 는 **후보 경로 목록**이다. 순서대로 시도하므로 확실치 않으면 여러 개 적어두면 된다.
 경로를 하나도 못 찾으면 조용히 0줄로 넘어가지 않고 오류로 알린다(빈 배열과 구분).
 
-### 3) 붙여넣기 (API·쿠키 둘 다 막혔을 때)
+### 4) 붙여넣기 (API·쿠키 둘 다 막혔을 때)
 
 DataHub 자막 탭 내용을 텍스트 파일로 저장한 뒤:
 
@@ -132,6 +190,10 @@ python3 -m hsbot paste --file sub.txt \
 - **키워드 사전 기반**이라 문맥·반어·부정을 모른다. "비싸지 않습니다"도 가격 축에 잡힌다.
 - **형태소 분석기 미사용**. 조사 제거는 규칙 근사다(`최저가` 같은 도메인어는 보호 목록으로 방어).
   축 매칭은 원문 부분일치라 이 근사의 영향을 받지 않고, 상위 키워드·차별 표현에만 영향을 준다.
+- **모델 묶기도 근사다**. 상품명에서 모델 코드를 규칙으로 뽑아 묶는다
+  (`"[단독] 로보락 S9 MAX Ultra 정품"` → `S9 MAX ULTRA`). 채널마다 표기가 크게
+  다르면 같은 제품이 갈릴 수 있으니, `search` 출력의 묶음을 눈으로 확인하고
+  어긋나면 `--model`·`--require` 로 직접 지정하는 편이 확실하다.
 - **자막 품질에 종속**. 음성인식 자막이면 오인식이 그대로 지표가 된다.
 - **인과 해석 금지**. 이 도구는 "어떻게 팔았나"를 재지 "그래서 잘 팔렸나"를 증명하지 않는다.
   매출·주문 데이터와 결합해야 의미가 생긴다.
@@ -147,12 +209,13 @@ hsbot/
   metrics.py       방송 1건 정량화
   compare.py       채널 간 비교, 차별 표현(로그오즈비)
   report.py        다크모드 HTML 리포트
-  cli.py           url / devtools / fetch / paste / analyze
+  discover.py      검색 결과 선별: 모델별 묶기, 기간·채널 필터, 중복 제거
+  cli.py           url / search / collect / devtools / fetch / paste / analyze
   sources/
-    datahub.py     DataHub API 어댑터 (설정 주도, API키·쿠키 인증)
-    devtools.py    HAR/cURL 역추적, 스키마 추론, 설정 생성
+    datahub.py     DataHub API 어댑터 (검색·자막, 설정 주도, API키·쿠키 인증)
+    devtools.py    HAR/cURL 역추적, 검색·자막 스키마 추론, 설정 생성
     paste.py       붙여넣기 텍스트 파서
     localjson.py   정규화 JSON 재로딩
-tools/             합성 데이터 생성기, 데모 스크립트
-tests/             53개 회귀 테스트
+tools/             합성 자막·검색HAR 생성기, 데모 스크립트
+tests/             112개 회귀 테스트 (전부 네트워크 없이 실행)
 ```

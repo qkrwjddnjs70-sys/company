@@ -3,6 +3,7 @@
     "DataHub 공식 API 스펙을 아직 확인하지 못해 아래 경로/필드명은 '추정값'입니다.",
     "발급받은 API 문서에 맞춰 endpoints.path, endpoints.query, mapping.*_paths 를 고치세요.",
     "코드는 건드릴 필요 없습니다. *_paths 는 후보를 순서대로 시도하므로 여러 개 적어두면 됩니다.",
+    "문서가 없다면 손으로 고치지 말고 `hsbot devtools --har page.har` 로 자동 생성하세요.",
     "이 파일을 config/datahub.json 으로 복사한 뒤 수정하세요."
   ],
   "base_url": "https://datahub.hsmoa.com",
@@ -18,6 +19,16 @@
   "rate_limit_sec": 0.5,
   "cache_dir": ".cache/datahub",
   "endpoints": {
+    "search": {
+      "path": "/api/v1/search",
+      "query": {
+        "keyword": "{keyword}",
+        "page": "{page}",
+        "size": "{size}",
+        "start_datetime": "{start_datetime}",
+        "end_datetime": "{end_datetime}"
+      }
+    },
     "product": {
       "path": "/api/v1/product/{product_key}",
       "query": {
@@ -36,17 +47,125 @@
     }
   },
   "mapping": {
+    "search": {
+      "_note": "검색 응답 → 방송 목록. hsbot search / collect 가 쓴다.",
+      "list_paths": [
+        "data.items",
+        "data.list",
+        "result.list",
+        "items",
+        "results",
+        "data"
+      ],
+      "product_key_paths": [
+        "product_key",
+        "productKey",
+        "prd_key",
+        "prdKey",
+        "goods_id",
+        "id"
+      ],
+      "product_name_paths": [
+        "product_name",
+        "goods_name",
+        "goodsNm",
+        "name",
+        "title"
+      ],
+      "channel_paths": [
+        "tv_channel",
+        "channel",
+        "shop_code",
+        "shopCode"
+      ],
+      "channel_name_paths": [
+        "channel_name",
+        "tv_channel_name",
+        "shop_name",
+        "shopNm"
+      ],
+      "start_paths": [
+        "start_datetime",
+        "start_time",
+        "broadcast_start",
+        "onair_start",
+        "onairStart"
+      ],
+      "end_paths": [
+        "end_datetime",
+        "end_time",
+        "broadcast_end",
+        "onair_end",
+        "onairEnd"
+      ],
+      "price_paths": [
+        "sale_price",
+        "salePrice",
+        "price"
+      ],
+      "url_paths": [
+        "url",
+        "link",
+        "detail_url",
+        "detailUrl"
+      ]
+    },
     "segments": {
-      "list_paths": ["data.subtitles", "data.items", "subtitles", "data", "items", "results"],
-      "text_paths": ["text", "subtitle", "content", "caption", "message"],
-      "start_paths": ["start_sec", "start_time", "startTime", "start", "offset", "datetime", "broadcast_datetime"],
-      "end_paths": ["end_sec", "end_time", "endTime", "end"],
-      "speaker_paths": ["speaker", "host", "speaker_name"]
+      "list_paths": [
+        "data.subtitles",
+        "data.items",
+        "subtitles",
+        "data",
+        "items",
+        "results"
+      ],
+      "text_paths": [
+        "text",
+        "subtitle",
+        "content",
+        "caption",
+        "message"
+      ],
+      "start_paths": [
+        "start_sec",
+        "start_time",
+        "startTime",
+        "start",
+        "offset",
+        "datetime",
+        "broadcast_datetime"
+      ],
+      "end_paths": [
+        "end_sec",
+        "end_time",
+        "endTime",
+        "end"
+      ],
+      "speaker_paths": [
+        "speaker",
+        "host",
+        "speaker_name"
+      ]
     },
     "broadcast": {
-      "product_name_paths": ["data.product_name", "data.name", "product_name", "name", "title"],
-      "price_paths": ["data.price", "data.sale_price", "price", "sale_price"],
-      "channel_name_paths": ["data.channel_name", "data.tv_channel_name", "channel_name"]
+      "product_name_paths": [
+        "data.product_name",
+        "data.name",
+        "product_name",
+        "name",
+        "title"
+      ],
+      "price_paths": [
+        "data.price",
+        "data.sale_price",
+        "price",
+        "sale_price"
+      ],
+      "channel_name_paths": [
+        "data.channel_name",
+        "data.tv_channel_name",
+        "channel_name"
+      ]
     }
   }
 }

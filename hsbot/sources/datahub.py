@@ -20,12 +20,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from ..discover import BroadcastRef
 from ..models import Broadcast, Segment, KST
 from .base import dig, first_found, first_present, to_seconds
 
 DEFAULT_CONFIG_PATH = os.path.join("config", "datahub.json")
 
 _MISSING = object()   # "경로 없음"과 "빈 배열"을 구분하기 위한 센티넬
+
+
+def _as_str(v: Any) -> str | None:
+    return None if v in (None, "") else str(v)
 
 
 class DataHubError(RuntimeError):
@@ -51,7 +56,9 @@ class DataHubConfig:
             example = os.path.join("config", "datahub.example.json")
             raise DataHubError(
                 f"설정 파일이 없습니다: {path}\n"
-                f"  → {example} 를 복사해 실제 API 스펙에 맞게 고친 뒤 다시 실행하세요."
+                f"  · 공식 API 문서가 없다면: 브라우저에서 검색·자막을 한 번 눌러본 뒤 HAR을 저장하고\n"
+                f"    `python3 -m hsbot devtools --har page.har` 로 자동 생성하세요(권장).\n"
+                f"  · 문서를 받았다면: {example} 를 복사해 실제 스펙에 맞게 고치세요."
             )
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
@@ -107,14 +114,30 @@ class DataHubClient:
                 f'  예) export {self._credential_env}="$(cat .secrets/datahub.cookie)"'
             )
 
+    @staticmethod
+    def _fmt(tmpl: str, params: dict[str, Any], *, where: str) -> str:
+        """템플릿을 채운다. 없는 파라미터는 조용히 넘기지 않고 알려준다."""
+        try:
+            return str(tmpl).format(**params)
+        except KeyError as e:
+            raise DataHubError(
+                f"{where} 의 템플릿 {tmpl!r} 에 있는 {e} 를 채울 값이 없습니다.\n"
+                f"  사용 가능한 값: {sorted(params)}"
+            ) from e
+
     def _url(self, name: str, params: dict[str, Any]) -> str:
         ep = self.cfg.endpoints.get(name)
         if not ep:
-            raise DataHubError(f"설정에 '{name}' 엔드포인트가 없습니다.")
-        path = ep["path"].format(**params)
+            raise DataHubError(
+                f"설정에 '{name}' 엔드포인트가 없습니다.\n"
+                f"  현재 설정된 엔드포인트: {sorted(self.cfg.endpoints)}\n"
+                f"  → F12에서 해당 요청을 관측한 HAR로 "
+                f"`hsbot devtools --har ... --force` 를 다시 돌리면 추가됩니다."
+            )
+        path = self._fmt(ep["path"], params, where=f"endpoints.{name}.path")
         query = {}
         for k, tmpl in (ep.get("query") or {}).items():
-            v = str(tmpl).format(**params)
+            v = self._fmt(tmpl, params, where=f"endpoints.{name}.query.{k}")
             if v and v != "None":
                 query[k] = v
         auth = self.cfg.auth or {}
@@ -171,7 +194,128 @@ class DataHubClient:
                 delay *= 2
         raise DataHubError(f"요청 실패({self.cfg.max_retries}회 재시도): {url}\n  마지막 오류: {last_err}")
 
-    # ---------- 고수준 ----------
+    # ---------- 고수준: 검색 ----------
+    def search(
+        self,
+        keyword: str,
+        *,
+        pages: int = 1,
+        size: int = 50,
+        start_datetime: str = "",
+        end_datetime: str = "",
+        use_cache: bool = True,
+        extra_params: dict[str, Any] | None = None,
+    ) -> list[BroadcastRef]:
+        """키워드로 방송 목록을 찾는다.
+
+        페이지를 넘기다가 빈 페이지가 나오거나, 새로 얻은 방송이 하나도 없으면
+        멈춘다(같은 응답을 무한히 받는 설정 오류에 걸려 돌지 않도록).
+        """
+        if "search" not in self.cfg.endpoints:
+            raise DataHubError(
+                "설정에 'search' 엔드포인트가 없습니다. 검색 API 스펙이 아직 없습니다.\n"
+                "  → 브라우저에서 실제로 검색을 한 번 한 뒤 그 HAR로\n"
+                "     `hsbot devtools --har search.har --force` 를 돌리면 자동으로 추가됩니다."
+            )
+        collected: list[BroadcastRef] = []
+        seen: set[tuple[str, str, str]] = set()
+        for page in range(1, max(1, pages) + 1):
+            params: dict[str, Any] = dict(
+                keyword=keyword,
+                query=keyword,
+                page=page,
+                size=size,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+            )
+            params.update(extra_params or {})
+            raw = self.get("search", use_cache=use_cache, **params)
+            refs = self.to_refs(raw)
+            fresh = [r for r in refs if r.dedup_key not in seen]
+            if not fresh:
+                break
+            seen.update(r.dedup_key for r in fresh)
+            collected.extend(fresh)
+            if len(refs) < size:
+                break
+        return collected
+
+    def to_refs(self, raw: Any) -> list[BroadcastRef]:
+        """검색 응답 JSON → BroadcastRef 목록. 매핑은 전부 설정에서 읽는다."""
+        sm = (self.cfg.mapping or {}).get("search") or {}
+        list_paths = sm.get("list_paths", ["data.items", "data.list", "items", "results", "data"])
+        items = first_found(raw, list_paths, _MISSING)
+        if items is _MISSING:
+            raise DataHubError(
+                "검색 결과 목록 경로를 찾지 못했습니다. "
+                "mapping.search.list_paths 를 실제 응답에 맞게 고치세요.\n"
+                f"  시도한 경로: {list_paths}\n"
+                f"  응답 최상위 키: {list(raw)[:10] if isinstance(raw, dict) else type(raw).__name__}"
+            )
+        if isinstance(items, dict):
+            items = list(items.values())
+        if not isinstance(items, list):
+            raise DataHubError(
+                f"검색 결과가 배열이 아닙니다(실제: {type(items).__name__}). "
+                "mapping.search.list_paths 를 확인하세요."
+            )
+
+        key_paths = sm.get("product_key_paths", ["product_key", "productKey", "prd_key", "id"])
+        name_paths = sm.get("product_name_paths", ["product_name", "name", "title", "goods_name"])
+        ch_paths = sm.get("channel_paths", ["channel", "tv_channel", "shop_code"])
+        chn_paths = sm.get("channel_name_paths", ["channel_name", "tv_channel_name", "shop_name"])
+        st_paths = sm.get("start_paths", ["start_datetime", "start_time", "broadcast_start"])
+        en_paths = sm.get("end_paths", ["end_datetime", "end_time", "broadcast_end"])
+        pr_paths = sm.get("price_paths", ["sale_price", "price"])
+        url_paths = sm.get("url_paths", ["url", "link", "detail_url"])
+
+        out: list[BroadcastRef] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            pk = first_present(it, key_paths)
+            url = first_present(it, url_paths)
+            if not pk and url:
+                pk = parse_datahub_url(str(url)).get("product_key")
+            if not pk:
+                continue
+            pk = str(pk)
+            channel = first_present(it, ch_paths) or (pk.split("_")[0] if "_" in pk else pk)
+            price = first_present(it, pr_paths)
+            out.append(
+                BroadcastRef(
+                    product_key=pk,
+                    channel=str(channel),
+                    channel_name=_as_str(first_present(it, chn_paths)),
+                    product_name=str(first_present(it, name_paths, "") or ""),
+                    tv_channel=_as_str(first_present(it, ch_paths)),
+                    start_datetime=str(first_present(it, st_paths, "") or ""),
+                    end_datetime=str(first_present(it, en_paths, "") or ""),
+                    price=int(price) if isinstance(price, (int, float)) or str(price).isdigit() else None,
+                    url=_as_str(url),
+                )
+            )
+        return out
+
+    def fetch_ref(self, ref: BroadcastRef, *, use_cache: bool = True) -> Broadcast:
+        """검색으로 찾은 방송 1건의 자막을 가져온다."""
+        bc = self.fetch_broadcast(
+            product_key=ref.product_key,
+            start_datetime=ref.start_datetime,
+            end_datetime=ref.end_datetime or ref.start_datetime,
+            tv_channel=ref.tv_channel,
+            channel=ref.channel,
+            product_name=ref.product_name or None,
+            use_cache=use_cache,
+        )
+        if ref.channel_name:
+            bc.channel_name = ref.channel_name
+        if ref.price and not bc.price:
+            bc.price = ref.price
+        bc.extra["discovered_by"] = "search"
+        return bc
+
+    # ---------- 고수준: 수집 ----------
     def fetch_broadcast(
         self,
         *,

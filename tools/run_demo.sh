@@ -3,6 +3,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "════════ 1단계. 검색으로 방송 찾기 (F12 HAR에서, 네트워크 불필요) ════════"
+python3 tools/make_search_har.py
+python3 -m hsbot search "로보락" \
+  --har fixtures/synthetic/search.har \
+  --require-keyword \
+  --out-targets out/targets.demo.json
+
+echo
+echo "════════ 2단계. 자막 수집 → 비교 분석 ════════"
+echo "  ※ 실제로는 위에서 찾은 방송의 자막을 API로 받아오지만(쿠키 필요),"
+echo "     이 데모는 네트워크 없이 돌아야 하므로 합성 자막으로 대체한다."
+echo
 python3 tools/make_synthetic_fixtures.py
 
 declare -A NAMES=( [gsshop]="GS SHOP" [cjonstyle]="CJ온스타일" [lotte]="롯데홈쇼핑" )

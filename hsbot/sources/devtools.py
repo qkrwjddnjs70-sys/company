@@ -198,6 +198,9 @@ def find_array_candidates(obj: Any, *, min_len: int = 3) -> list[ArrayCandidate]
                     3.0 * bool(text_keys) + 2.0 * bool(time_keys) + 0.5 * bool(spk_keys)
                     + min(len(dicts) / 100.0, 2.0)
                 )
+                # 상품 목록은 자막과 겉모습이 비슷하다(한글 문자열 + 시각 필드).
+                # 목록 증거가 강하면 자막 점수를 깎아 오인을 막는다.
+                score -= 5.0 * listing_evidence(dicts)
                 if score > 0:
                     out.append(ArrayCandidate(
                         path=path or "(root)", length=len(dicts), keys=keys, score=round(score, 2),
@@ -256,6 +259,230 @@ def find_meta_paths(obj: Any, *, skip_prefix: str = "") -> dict[str, list[str]]:
     }
 
 
+# ---------------------------------------------------------------- 검색 응답 추론
+
+KEY_KEY_HINTS = ("product_key", "productkey", "prd_key", "goods_id", "product_id", "prd_no", "id", "key")
+START_KEY_HINTS = ("start_datetime", "start_time", "starttime", "broadcast_start", "onair_start",
+                   "air_start", "start", "begin")
+END_KEY_HINTS = ("end_datetime", "end_time", "endtime", "broadcast_end", "onair_end", "air_end", "end")
+URL_KEY_HINTS = ("url", "link", "href", "detail_url", "page_url")
+IMAGE_KEY_HINTS = ("thumb", "image", "img", "photo", "poster", "banner", "icon")
+
+
+@dataclass
+class ListingCandidate:
+    """'방송 목록'(검색 결과)일 가능성이 있는 배열 위치.
+
+    자막 배열과 겉모습이 비슷해 헷갈리기 쉽다. 결정적 차이는 두 가지다.
+      · 자막 항목 = 짧은 발화 + 상대시각(00:05:12)  → 한 방송 안의 내용
+      · 목록 항목 = 상품명 + 절대시각(2026-09-04T20:38) + 가격 + 상품키
+    """
+
+    path: str
+    length: int
+    keys: list[str]
+    score: float
+    key_keys: list[str] = field(default_factory=list)
+    name_keys: list[str] = field(default_factory=list)
+    channel_keys: list[str] = field(default_factory=list)
+    channel_name_keys: list[str] = field(default_factory=list)
+    start_keys: list[str] = field(default_factory=list)
+    end_keys: list[str] = field(default_factory=list)
+    price_keys: list[str] = field(default_factory=list)
+    url_keys: list[str] = field(default_factory=list)
+    sample: dict[str, Any] = field(default_factory=dict)
+
+
+def _looks_like_abs_time(v: Any) -> bool:
+    return isinstance(v, str) and bool(_ISO.match(v))
+
+
+def _hinted(key: str, hints: tuple[str, ...]) -> bool:
+    lk = key.lower().replace("-", "_")
+    return any(h in lk for h in hints)
+
+
+@dataclass
+class FieldProfile:
+    """배열 안 한 필드의 '값 생김새' 요약.
+
+    필드명에만 기대면 `goodsNm`, `prdKey`, `shopNm` 처럼 줄임말을 쓰는 실제
+    커머스 API에서 곧바로 실패한다. 그래서 이름은 동점 처리에만 쓰고,
+    판정은 값의 모양으로 한다.
+    """
+
+    key: str
+    n: int
+    unique_ratio: float = 0.0
+    hangul_ratio: float = 0.0
+    abs_time_ratio: float = 0.0
+    numeric_ratio: float = 0.0
+    url_ratio: float = 0.0
+    avg_len: float = 0.0
+    avg_num: float = 0.0
+    min_value: Any = None
+
+
+def profile_fields(dicts: list[dict], *, sample: int = 50) -> dict[str, FieldProfile]:
+    """배열 항목들을 훑어 필드별 값 통계를 만든다."""
+    rows = dicts[:sample]
+    keys = sorted({k for d in rows for k in d})
+    out: dict[str, FieldProfile] = {}
+    for k in keys:
+        vals = [d[k] for d in rows if k in d and d[k] not in (None, "")]
+        if not vals:
+            continue
+        n = len(vals)
+        strs = [v for v in vals if isinstance(v, str)]
+        nums = [float(v) for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        hashable = [v for v in vals if isinstance(v, (str, int, float, bool))]
+        out[k] = FieldProfile(
+            key=k,
+            n=n,
+            unique_ratio=(len(set(hashable)) / len(hashable)) if hashable else 0.0,
+            hangul_ratio=sum(bool(_HANGUL.search(s)) for s in strs) / n,
+            abs_time_ratio=sum(_looks_like_abs_time(v) for v in vals) / n,
+            numeric_ratio=len(nums) / n,
+            url_ratio=sum(("://" in s or s.startswith("/")) for s in strs) / n,
+            avg_len=(sum(len(s) for s in strs) / len(strs)) if strs else 0.0,
+            avg_num=(sum(nums) / len(nums)) if nums else 0.0,
+            min_value=min(strs) if strs else None,
+        )
+    return out
+
+
+def _listing_buckets(profiles: dict[str, FieldProfile]) -> dict[str, list[str]]:
+    """값 생김새로 상품키·상품명·채널·시각·가격·URL 필드를 고른다."""
+    b: dict[str, list[str]] = {
+        "key": [], "name": [], "channel": [], "channel_name": [],
+        "start": [], "end": [], "price": [], "url": [],
+    }
+
+    # --- 시각: 절대시각 필드를 모아 값이 이른 쪽을 start, 늦은 쪽을 end 로 본다
+    times = [p for p in profiles.values() if p.abs_time_ratio >= 0.6]
+    if len(times) >= 2:
+        times.sort(key=lambda p: (str(p.min_value or "")))
+        b["start"] = [times[0].key]
+        b["end"] = [t.key for t in times[1:]]
+    elif times:
+        b["start"] = [times[0].key]
+    # 이름 힌트가 값 판정과 어긋나면 이름 쪽을 믿는다 (end 를 start 로 뽑는 실수 방지)
+    hinted_start = [p.key for p in times if _hinted(p.key, START_KEY_HINTS)
+                    and not _hinted(p.key, END_KEY_HINTS)]
+    hinted_end = [p.key for p in times if _hinted(p.key, END_KEY_HINTS)]
+    if hinted_start:
+        b["start"] = hinted_start
+    if hinted_end:
+        b["end"] = hinted_end
+
+    # --- URL: 이미지 URL(썸네일)은 상세 페이지가 아니므로 제외한다
+    b["url"] = [
+        p.key for p in profiles.values()
+        if p.url_ratio >= 0.6 and not _hinted(p.key, IMAGE_KEY_HINTS)
+    ]
+    b["url"].sort(key=lambda k: (not _hinted(k, URL_KEY_HINTS), k))
+
+    # --- 상품키: 행마다 거의 고유하고 숫자를 포함하는 짧은 값
+    for p in profiles.values():
+        if p.key in b["url"]:
+            continue
+        looks_id = p.unique_ratio >= 0.8 and (
+            (p.numeric_ratio >= 0.8 and p.avg_num > 999)
+            or (0 < p.avg_len <= 64 and p.hangul_ratio < 0.2 and p.abs_time_ratio < 0.5)
+        )
+        if looks_id and (p.numeric_ratio >= 0.8 or _hinted(p.key, KEY_KEY_HINTS)):
+            b["key"].append(p.key)
+    b["key"].sort(key=lambda k: (not _hinted(k, KEY_KEY_HINTS), k))
+
+    # --- 한글 텍스트 필드를 길이로 나눈다: 긴 쪽이 상품명, 짧고 반복되면 채널명
+    texts = [p for p in profiles.values()
+             if p.hangul_ratio >= 0.5 and p.avg_len >= 2 and p.abs_time_ratio < 0.5]
+    texts.sort(key=lambda p: -p.avg_len)
+    for p in texts:
+        short_and_repeated = p.avg_len <= 14 and p.unique_ratio <= 0.6
+        if short_and_repeated and not _hinted(p.key, NAME_KEY_HINTS[:3]):
+            b["channel_name"].append(p.key)
+        elif p.avg_len >= 4:
+            b["name"].append(p.key)
+    b["name"].sort(key=lambda k: (not _hinted(k, NAME_KEY_HINTS), k))
+
+    # --- 채널 코드: 짧고 반복되는 비한글 문자열 (상품키/URL 로 이미 쓴 건 제외)
+    used = set(b["key"]) | set(b["url"]) | set(b["name"]) | set(b["channel_name"])
+    for p in profiles.values():
+        if p.key in used or p.abs_time_ratio >= 0.5:
+            continue
+        if 0 < p.avg_len <= 20 and p.hangul_ratio < 0.5 and p.unique_ratio <= 0.6:
+            b["channel"].append(p.key)
+    b["channel"].sort(key=lambda k: (not _hinted(k, CHANNEL_KEY_HINTS + ("shop", "chan")), k))
+
+    # --- 가격: 100 이상인 수치 필드. 여러 개면 평균이 작은 쪽(=판매가)을 먼저.
+    prices = [p for p in profiles.values()
+              if p.numeric_ratio >= 0.6 and p.avg_num >= 100 and p.key not in b["key"]]
+    prices.sort(key=lambda p: (not _hinted(p.key, ("sale", "판매")), p.avg_num))
+    b["price"] = [p.key for p in prices]
+
+    return b
+
+
+def find_listing_candidates(obj: Any, *, min_len: int = 2, min_score: float = 5.0) -> list[ListingCandidate]:
+    """JSON 어디에 '방송/상품 목록'이 있는지 점수를 매겨 찾는다."""
+    out: list[ListingCandidate] = []
+
+    def walk(node: Any, path: str, depth: int) -> None:
+        if depth > 6:
+            return
+        if isinstance(node, list):
+            dicts = [x for x in node if isinstance(x, dict)]
+            if len(dicts) >= min_len:
+                profiles = profile_fields(dicts)
+                b = _listing_buckets(profiles)
+                score = (
+                    3.0 * bool(b["key"])
+                    + 3.0 * bool(b["name"])
+                    + 2.5 * bool(b["start"])
+                    + 1.5 * bool(b["price"])
+                    + 1.0 * bool(b["channel"] or b["channel_name"])
+                    + 0.5 * bool(b["url"])
+                    + min(len(dicts) / 50.0, 1.0)
+                )
+                # 상품명이 없거나, 상품키·URL 둘 다 없으면 목록이 아니다.
+                if b["name"] and (b["key"] or b["url"]) and score >= min_score:
+                    out.append(ListingCandidate(
+                        path=path or "(root)", length=len(dicts),
+                        keys=sorted(profiles), score=round(score, 2),
+                        key_keys=b["key"][:4], name_keys=b["name"][:4],
+                        channel_keys=b["channel"][:4], channel_name_keys=b["channel_name"][:4],
+                        start_keys=b["start"][:4], end_keys=b["end"][:4],
+                        price_keys=b["price"][:4], url_keys=b["url"][:4],
+                        sample=dicts[0],
+                    ))
+            for i, x in enumerate(node[:3]):
+                walk(x, f"{path}.{i}" if path else str(i), depth + 1)
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, f"{path}.{k}" if path else k, depth + 1)
+
+    walk(obj, "", 0)
+    out.sort(key=lambda c: -c.score)
+    return out
+
+
+def listing_evidence(dicts: list[dict]) -> float:
+    """이 배열이 '자막'이 아니라 '목록'이라는 증거의 세기 (0~1).
+
+    자막 탐지기가 상품 목록을 자막으로 오인하는 것을 막는 데 쓴다.
+    목록에만 있는 특징은 절대시각 · 가격 · 행마다 고유한 상품키 · 상세 URL 이다.
+    """
+    if len(dicts) < 2:
+        return 0.0
+    profiles = profile_fields(dicts)
+    if not profiles:
+        return 0.0
+    b = _listing_buckets(profiles)
+    signals = [bool(b["start"]), bool(b["price"]), bool(b["key"]), bool(b["url"]), bool(b["name"])]
+    return sum(signals) / len(signals)
+
+
 # ---------------------------------------------------------------- HAR
 
 @dataclass
@@ -272,11 +499,37 @@ class HarHit:
         return self.candidates[0].score if self.candidates else 0.0
 
 
-def scan_har(path: str, *, min_score: float = 3.0) -> list[HarHit]:
-    """HAR에서 자막처럼 보이는 JSON 응답을 찾아 점수순으로 돌려준다."""
+@dataclass
+class SearchHit:
+    """검색(방송 목록) 응답으로 보이는 HAR 항목."""
+
+    url: str
+    method: str
+    status: int
+    candidates: list[ListingCandidate]
+    headers: dict[str, str] = field(default_factory=dict)
+    body: Any = None
+
+    @property
+    def score(self) -> float:
+        return self.candidates[0].score if self.candidates else 0.0
+
+    @property
+    def query(self) -> dict[str, str]:
+        return {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(self.url).query).items()}
+
+    def guess_keyword(self) -> str | None:
+        """어떤 쿼리 파라미터가 검색어였는지 되짚는다 (경로 템플릿화에 쓴다)."""
+        for k, v in self.query.items():
+            if _hinted(k, ("keyword", "query", "search", "q", "word", "term")) and v:
+                return v
+        return None
+
+
+def _iter_har_json(path: str):
+    """HAR에서 JSON 응답만 훑는다. 파일을 한 번만 읽기 위해 분리했다."""
     with open(path, encoding="utf-8") as f:
         har = json.load(f)
-    hits: list[HarHit] = []
     for entry in har.get("log", {}).get("entries", []):
         req, resp = entry.get("request", {}), entry.get("response", {})
         content = resp.get("content", {}) or {}
@@ -290,17 +543,43 @@ def scan_har(path: str, *, min_score: float = 3.0) -> list[HarHit]:
             data = json.loads(text)
         except (json.JSONDecodeError, ValueError):
             continue
-        cands = find_array_candidates(data)
-        if not cands or cands[0].score < min_score:
-            continue
         headers = {}
         for h in req.get("headers", []):
             k = (h.get("name") or "").lower()
             if k in KEEP_HEADERS or k.startswith(KEEP_PREFIXES):
                 headers[k] = h.get("value", "")
+        yield req.get("url", ""), req.get("method", "GET"), resp.get("status", 0), headers, data
+
+
+def scan_har(path: str, *, min_score: float = 3.0) -> list[HarHit]:
+    """HAR에서 자막처럼 보이는 JSON 응답을 찾아 점수순으로 돌려준다."""
+    hits: list[HarHit] = []
+    for url, method, status, headers, data in _iter_har_json(path):
+        cands = find_array_candidates(data)
+        if not cands or cands[0].score < min_score:
+            continue
         hits.append(HarHit(
-            url=req.get("url", ""), method=req.get("method", "GET"),
-            status=resp.get("status", 0), candidates=cands[:3], headers=headers, body=data,
+            url=url, method=method, status=status,
+            candidates=cands[:3], headers=headers, body=data,
+        ))
+    hits.sort(key=lambda h: -h.score)
+    return hits
+
+
+def scan_har_search(path: str, *, min_score: float = 5.0) -> list[SearchHit]:
+    """HAR에서 '방송 목록'처럼 보이는 JSON 응답을 찾는다.
+
+    자막 응답과 겹칠 수 있으므로(한 응답에 목록과 자막이 같이 오는 경우도 있다)
+    두 스캔은 서로 배타적이지 않다. 판단은 호출 측에서 점수로 한다.
+    """
+    hits: list[SearchHit] = []
+    for url, method, status, headers, data in _iter_har_json(path):
+        cands = find_listing_candidates(data)
+        if not cands or cands[0].score < min_score:
+            continue
+        hits.append(SearchHit(
+            url=url, method=method, status=status,
+            candidates=cands[:3], headers=headers, body=data,
         ))
     hits.sort(key=lambda h: -h.score)
     return hits
@@ -328,6 +607,63 @@ def _templatize(query: dict[str, str], product_key: str | None) -> dict[str, str
     return out
 
 
+def _templatize_search(query: dict[str, str], keyword: str | None) -> dict[str, str]:
+    """검색 요청의 쿼리를 템플릿화한다.
+
+    관측된 검색어 자리에는 `{keyword}`, 페이지/개수 자리에는 `{page}` `{size}` 가 들어간다.
+    나머지(정렬, 카테고리 필터 등)는 관측값 그대로 둔다 — 브라우저가 보낸 값을
+    그대로 재현하는 편이 서버가 거부할 확률이 낮다.
+    """
+    out: dict[str, str] = {}
+    for k, v in query.items():
+        if keyword and v == keyword:
+            out[k] = "{keyword}"
+        elif _hinted(k, ("keyword", "query", "search", "word", "term")) or k.lower() == "q":
+            out[k] = "{keyword}"
+        # size 를 page 보다 먼저 본다. 'pageSize' 는 'page' 를 포함하므로
+        # 순서를 뒤집으면 개수 파라미터가 페이지 번호로 잘못 잡힌다.
+        elif _hinted(k, ("size", "limit", "count", "per_page", "perpage", "rows")) and str(v).isdigit():
+            out[k] = "{size}"
+        elif _hinted(k, ("page", "pageno", "page_no", "offset")) and str(v).isdigit():
+            out[k] = "{page}"
+        elif "start" in k.lower() and _ISO.match(str(v)):
+            out[k] = "{start_datetime}"
+        elif "end" in k.lower() and _ISO.match(str(v)):
+            out[k] = "{end_datetime}"
+        else:
+            out[k] = v
+    return out
+
+
+def _first_or(keys: list[str], fallback: list[str]) -> list[str]:
+    return keys[:4] if keys else fallback
+
+
+def build_search_section(hit: "SearchHit") -> dict[str, Any]:
+    """검색 응답 관측 결과 → config 의 endpoints.search / mapping.search 조각."""
+    c = hit.candidates[0]
+    p = urllib.parse.urlparse(hit.url)
+    query = {k: v[0] for k, v in urllib.parse.parse_qs(p.query).items()}
+    kw = hit.guess_keyword()
+
+    list_path = "" if c.path == "(root)" else c.path
+    return {
+        "endpoint": {"path": p.path, "query": _templatize_search(query, kw)},
+        "mapping": {
+            "list_paths": [list_path],
+            "product_key_paths": _first_or(c.key_keys, ["product_key", "id"]),
+            "product_name_paths": _first_or(c.name_keys, ["product_name", "name", "title"]),
+            "channel_paths": _first_or(c.channel_keys, ["channel", "tv_channel"]),
+            "channel_name_paths": _first_or(c.channel_name_keys, ["channel_name", "shop_name"]),
+            "start_paths": _first_or(c.start_keys, ["start_datetime", "start_time"]),
+            "end_paths": _first_or(c.end_keys, ["end_datetime", "end_time"]),
+            "price_paths": _first_or(c.price_keys, ["sale_price", "price"]),
+            "url_paths": _first_or(c.url_keys, ["url", "link"]),
+        },
+        "observed_keyword": kw,
+    }
+
+
 def build_config(
     url: str,
     headers: dict[str, str],
@@ -336,6 +672,7 @@ def build_config(
     product_key: str | None = None,
     cookie_env: str = "HSMOA_DATAHUB_COOKIE",
     body: Any = None,
+    search_hit: "SearchHit | None" = None,
 ) -> dict[str, Any]:
     """관측 결과 → config/datahub.json 초안. 쿠키 값은 절대 넣지 않는다."""
     p = urllib.parse.urlparse(url)
@@ -368,13 +705,32 @@ def build_config(
         "channel_name_paths": (meta.get("channel") or [])[:4] or ["data.channel_name", "channel_name"],
     }
 
+    note = [
+        "F12 개발자도구 관측 결과로 자동 생성된 초안입니다.",
+        "쿠키는 이 파일에 없습니다. 환경변수로 주입하세요:",
+        f"  export {cookie_env}=\"$(cat .secrets/datahub.cookie)\"",
+        "쿠키는 로그인 세션이라 만료됩니다. 401/403이 나면 F12에서 다시 복사하세요.",
+    ]
+    endpoints: dict[str, Any] = {}
+    mapping: dict[str, Any] = {"segments": seg, "broadcast": meta_map}
+    if candidate is not None or not search_hit:
+        endpoints["subtitle"] = {"path": path, "query": _templatize(query, product_key)}
+
+    if search_hit is not None:
+        sec = build_search_section(search_hit)
+        endpoints["search"] = sec["endpoint"]
+        mapping["search"] = sec["mapping"]
+        sp = urllib.parse.urlparse(search_hit.url)
+        if f"{sp.scheme}://{sp.netloc}" != f"{p.scheme}://{p.netloc}":
+            note.append(
+                f"※ 검색과 자막의 호스트가 다릅니다({sp.netloc} vs {p.netloc}). "
+                "base_url 은 자막 기준이므로 endpoints.search.path 를 절대 URL로 바꾸세요."
+            )
+        if sec["observed_keyword"]:
+            note.append(f"검색어로 관측된 값: {sec['observed_keyword']!r} → '{{keyword}}' 로 템플릿화했습니다.")
+
     return {
-        "_note": [
-            "F12 개발자도구 관측 결과로 자동 생성된 초안입니다.",
-            "쿠키는 이 파일에 없습니다. 환경변수로 주입하세요:",
-            f"  export {cookie_env}=\"$(cat .secrets/datahub.cookie)\"",
-            "쿠키는 로그인 세션이라 만료됩니다. 401/403이 나면 F12에서 다시 복사하세요.",
-        ],
+        "_note": note,
         "base_url": f"{p.scheme}://{p.netloc}",
         "api_key_env": cookie_env,
         "auth": {"type": "cookie", "cookie_env": cookie_env, "extra_headers": safe_headers},
@@ -382,9 +738,31 @@ def build_config(
         "max_retries": 4,
         "rate_limit_sec": 1.0,
         "cache_dir": ".cache/datahub",
-        "endpoints": {"subtitle": {"path": path, "query": _templatize(query, product_key)}},
-        "mapping": {"segments": seg, "broadcast": meta_map},
+        "endpoints": endpoints,
+        "mapping": mapping,
     }
+
+
+def extract_refs(hit: "SearchHit") -> list:
+    """HAR의 검색 응답 본문에서 곧바로 방송 목록을 뽑는다 (네트워크 불필요).
+
+    HAR에는 응답 본문이 통째로 들어 있으므로, 브라우저에서 '로보락'을 한 번
+    검색해두면 그 결과 목록을 요청 0회로 그대로 쓸 수 있다.
+    """
+    from .datahub import DataHubClient, DataHubConfig   # 순환 import 회피
+
+    if not hit.candidates:
+        raise ValueError("이 응답에서는 방송 목록을 찾지 못했습니다.")
+    sec = build_search_section(hit)
+    p = urllib.parse.urlparse(hit.url)
+    cfg = DataHubConfig(
+        base_url=f"{p.scheme}://{p.netloc}",
+        endpoints={"search": sec["endpoint"]},
+        mapping={"search": sec["mapping"]},
+        auth={},
+        cache_dir=None,
+    )
+    return DataHubClient(cfg, api_key="unused").to_refs(hit.body)
 
 
 def save_cookie(cookie: str, path: str = os.path.join(".secrets", "datahub.cookie")) -> str:
