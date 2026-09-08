@@ -33,11 +33,23 @@ python3 -m unittest discover -s tests
 키워드 검색 자동화의 유일한 전제조건이다. **딱 한 번만** 하면 그 뒤로는 명령 한 줄이다.
 
 ```
-1. 로그인 상태로 사이트에서 "로보락" 을 검색한다
-2. 검색 결과에서 방송 하나를 열고 자막 탭까지 눌러본다   ← 검색+자막 둘 다 관측하려고
-3. F12 → Network → Fetch/XHR 필터 → Preserve log 체크
-4. 우클릭 → "Save all as HAR with content" 로 저장
-5. python3 -m hsbot devtools --har page.har --product-key gsshop_1101476773
+1. F12 → Network 탭 → Fetch/XHR 필터 → "Keep log"(구 Preserve log) 체크
+2. 로그인 상태로 사이트에서 "로보락" 을 검색한다      ← 이때 요청이 잡혀야 한다
+3. 검색 결과에서 방송 하나를 열고 자막 탭까지 눌러본다  ← 검색+자막 둘 다 관측하려고
+4. 요청 목록(Name 열)의 아무 줄에나 우클릭 → "Save all as HAR (sanitized)"
+   또는 툴바의 ⬇ (Export HAR) 버튼 클릭
+5. python3 -m hsbot devtools --har page.har
+```
+
+**sanitized 로 충분하다.** Chrome 130부터 HAR 내보내기는 기본이 sanitized 이고,
+Cookie·Authorization·Set-Cookie 헤더만 빠질 뿐 **응답 본문은 그대로 남는다.**
+`search --har` / `devtools --extract` 처럼 HAR 안에서 끝나는 작업은 전부 된다.
+
+쿠키가 필요한 건 **API로 반복 수집(`fetch` / `collect`)할 때뿐**이다. 그때만:
+
+```
+DevTools 설정(⚙) → Network → "Allow to generate HAR with sensitive data" 체크
+→ 내보내기 버튼을 길게 눌러 "Export HAR (with sensitive data)" 선택
 ```
 
 **왜 이 단계가 필요한가.** 공식 API 문서가 없는 서비스라 엔드포인트 주소와 응답

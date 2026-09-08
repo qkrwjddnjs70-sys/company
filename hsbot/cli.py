@@ -472,6 +472,14 @@ def cmd_devtools(args) -> int:
         path = dt.save_cookie(cookie, args.cookie_out)
         print(f"\n쿠키 저장: {path}  (권한 0600, .gitignore 처리됨)")
         print(f'  export HSMOA_DATAHUB_COOKIE="$(cat {path})"')
+    elif args.har and not args.no_cookie:
+        # Chrome 130+ 는 기본이 'sanitized' 내보내기라 Cookie/Authorization 헤더가 빠진다.
+        # 응답 본문은 그대로 남으므로 HAR만으로 하는 작업은 전부 된다.
+        print("\n쿠키 없음 — sanitized HAR로 보입니다(Chrome 130+ 기본값).")
+        print("  · 응답 본문은 남아 있으므로 --extract / --extract-refs 는 그대로 됩니다.")
+        print("  · API로 반복 수집(fetch/collect)하려면 쿠키가 필요합니다:")
+        print("    DevTools 설정(⚙) → Network → 'Allow to generate HAR with sensitive data' 체크")
+        print("    → 내보내기 버튼 길게 누르기 → 'Export HAR (with sensitive data)'")
 
     cfg = dt.build_config(url, headers or {}, candidate, product_key=args.product_key,
                           body=body, search_hit=search_pick)
