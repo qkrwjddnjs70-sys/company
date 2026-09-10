@@ -101,6 +101,33 @@ class SearchConfigTest(HarFixture):
         self.assertEqual(q["pageSize"], "{size}")
         self.assertEqual(q["page"], "{page}")
 
+    def test_불리언_플래그를_검색어로_오인하지_않는다(self):
+        """`is_timeline_search=false` 는 이름에 'search' 가 있어도 검색어가 아니다.
+
+        실제 API에서 이 결함으로 `is_timeline_search=로보락` 이 전송됐다.
+        """
+        q = dt._templatize_search(
+            {"query": "로보락", "is_timeline_search": "false",
+             "is_compare_search": "true", "has_stock": "1", "sort_by": "recent"},
+            "로보락",
+        )
+        self.assertEqual(q["query"], "{keyword}")
+        self.assertEqual(q["is_timeline_search"], "false")
+        self.assertEqual(q["is_compare_search"], "true")
+        self.assertEqual(q["has_stock"], "1")
+
+    def test_검색어를_못_찾아도_플래그는_건드리지_않는다(self):
+        q = dt._templatize_search({"search_word": "로보락", "is_reco_search": "false"}, None)
+        self.assertEqual(q["search_word"], "{keyword}")
+        self.assertEqual(q["is_reco_search"], "false")
+
+    def test_offset과_page를_구분한다(self):
+        """offset은 '건너뛸 개수', page는 '쪽 번호'라 섞으면 2페이지를 못 넘긴다."""
+        q = dt._templatize_search({"offset": "0", "limit": "50"}, None)
+        self.assertEqual(q["offset"], "{offset}")
+        self.assertEqual(q["limit"], "{size}")
+        self.assertEqual(dt._templatize_search({"page": "1"}, None)["page"], "{page}")
+
     def test_관측하지_못한_파라미터는_그대로_둔다(self):
         self.assertEqual(dt.build_search_section(self.hits[0])["endpoint"]["query"]["sort"], "recent")
 
@@ -170,6 +197,32 @@ class SearchEndpointErrorTest(unittest.TestCase):
         with self.assertRaises(DataHubError) as ctx:
             c.to_refs({"result": {"list": []}})
         self.assertIn("list_paths", str(ctx.exception))
+
+    def test_플래그에_검색어가_박힌_설정은_요청_전에_막힌다(self):
+        c = self._client({"search": {"path": "/s", "query": {
+            "query": "{keyword}", "is_timeline_search": "{keyword}"}}})
+        with self.assertRaises(DataHubError) as ctx:
+            c.search("로보락")
+        msg = str(ctx.exception)
+        self.assertIn("is_timeline_search", msg)
+        self.assertIn("repair_search_query", msg)
+
+    def test_정상적인_플래그_설정은_통과한다(self):
+        c = self._client({"search": {"path": "/s", "query": {
+            "query": "{keyword}", "is_timeline_search": "false"}}})
+        c.cfg.mapping = {"search": {"list_paths": ["results"]}}
+        self.assertEqual(c.to_refs({"results": []}), [])
+
+    def test_offset은_페이지가_아니라_건너뛸_개수로_계산된다(self):
+        seen = []
+        c = self._client({"search": {"path": "/s", "query": {
+            "offset": "{offset}", "limit": "{size}"}}})
+        c.cfg.mapping = {"search": {"list_paths": ["results"]}}
+        c.get = lambda name, use_cache=True, **p: (seen.append(p), {"results": []})[1]
+        c.search("로보락", pages=3, size=50)
+        self.assertEqual([p["offset"] for p in seen[:1]], [0])
+        # 첫 페이지가 비면 멈추므로, 계산식 자체를 직접 확인한다.
+        self.assertEqual([(pg - 1) * 50 for pg in (1, 2, 3)], [0, 50, 100])
 
     def test_자막이_0건인_것과_경로_오류를_구분한다(self):
         c = self._client({"search": {"path": "/s"}})

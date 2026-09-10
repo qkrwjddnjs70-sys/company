@@ -4,7 +4,12 @@
     "쿠키는 이 파일에 없습니다. 환경변수로 주입하세요:",
     "  export HSMOA_DATAHUB_COOKIE=\"$(cat .secrets/datahub.cookie)\"",
     "쿠키는 로그인 세션이라 만료됩니다. 401/403이 나면 F12에서 다시 복사하세요.",
-    "검색어로 관측된 값: '로보락' → '{keyword}' 로 템플릿화했습니다."
+    "",
+    "⚠️ 미복구 항목 3개: is_timeline_search, is_compare_search, is_reco_search",
+    "   초기 템플릿화 결함으로 불리언 플래그에 '{keyword}' 가 들어갔습니다.",
+    "   실제 값은 HAR에만 있으므로, 검색을 실행한 HAR로 아래를 돌려 복구하세요:",
+    "     python3 tools/repair_search_query.py --har page.har --write",
+    "   복구 전에는 hsbot 이 요청을 보내지 않고 오류로 멈춥니다."
   ],
   "base_url": "https://datahub.hsmoa.com",
   "api_key_env": "HSMOA_DATAHUB_COOKIE",
@@ -37,7 +42,7 @@
       "path": "/next-api/search",
       "query": {
         "query": "{keyword}",
-        "offset": "{page}",
+        "offset": "{offset}",
         "limit": "{size}",
         "source": "tvshop",
         "price_min": "0",

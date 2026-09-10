@@ -68,6 +68,28 @@ DevTools 설정(⚙) → Network → "Allow to generate HAR with sensitive data"
 | 설정 생성 | `config/datahub.json` 초안 작성 (`endpoints.search` + `endpoints.subtitle`) |
 | 쿠키 분리 | 쿠키를 **설정 파일에 절대 쓰지 않고** `.secrets/datahub.cookie` (0600, gitignore)로 분리 |
 
+### 0-1) 검색 쿼리만 다시 맞추기 (설정이 이미 있을 때)
+
+`devtools --force` 는 설정을 **통째로** 다시 만들어서, 손으로 넣은 항목
+(`endpoints.broadcast_list`, 자막의 `"method": "POST"` 등)이 사라진다.
+검색 쿼리만 고치고 싶으면 이쪽을 쓴다.
+
+```bash
+python3 tools/repair_search_query.py --har page.har            # 미리보기
+python3 tools/repair_search_query.py --har page.har --write    # 적용
+```
+
+이번 요청에 없던 파라미터(기간 필터처럼 특정 검색에서만 붙는 것)는 **지우지 않고 남긴다**.
+지워버리면 `--since`/`--until` 이 조용히 동작하지 않게 되기 때문이다.
+
+> **왜 필요했나.** 초기 템플릿화 규칙에 결함이 둘 있었다.
+> `is_timeline_search` 처럼 이름에 `search` 가 든 **불리언 플래그**를 검색어 자리로
+> 오인해 `is_timeline_search=로보락` 을 보냈고, `offset`(건너뛸 개수)을
+> `{page}`(쪽 번호)로 취급해 2페이지를 요청해도 2건만 건너뛴 같은 목록을 받았다.
+> 지금은 **값이 검색어와 일치할 때만** `{keyword}` 로 바꾸고, `offset` 과 `page` 를
+> 분리해 계산한다. 플래그에 `{keyword}` 가 남아 있는 설정은 요청을 보내기 전에
+> 오류로 멈추고 위 명령을 안내한다.
+
 ### 1) 검색 기반 자동 수집 (평상시 쓰는 경로)
 
 ```bash
@@ -206,6 +228,9 @@ python3 -m hsbot paste --file sub.txt \
   (`"[단독] 로보락 S9 MAX Ultra 정품"` → `S9 MAX ULTRA`). 채널마다 표기가 크게
   다르면 같은 제품이 갈릴 수 있으니, `search` 출력의 묶음을 눈으로 확인하고
   어긋나면 `--model`·`--require` 로 직접 지정하는 편이 확실하다.
+- **쿼리 템플릿화도 근사다**. 어떤 파라미터가 검색어·페이지·개수인지 값과 이름으로
+  추정한다. 생성된 `config/datahub.json` 의 `endpoints.search.query` 는 한 번
+  눈으로 확인하는 편이 안전하다.
 - **자막 품질에 종속**. 음성인식 자막이면 오인식이 그대로 지표가 된다.
 - **인과 해석 금지**. 이 도구는 "어떻게 팔았나"를 재지 "그래서 잘 팔렸나"를 증명하지 않는다.
   매출·주문 데이터와 결합해야 의미가 생긴다.

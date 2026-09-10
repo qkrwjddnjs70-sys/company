@@ -197,6 +197,34 @@ class DataHubClient:
                 delay *= 2
         raise DataHubError(f"요청 실패({self.cfg.max_retries}회 재시도): {url}\n  마지막 오류: {last_err}")
 
+    # ---------- 설정 점검 ----------
+    _FLAG_PREFIXES = ("is_", "has_", "use_", "enable_", "with_", "include_", "no_")
+
+    def _check_search_query(self) -> None:
+        """검색 쿼리에 명백히 잘못된 템플릿이 박혀 있으면 요청 전에 멈춘다.
+
+        초기 버전의 자동 템플릿화가 `is_timeline_search` 같은 불리언 플래그를
+        검색어 자리로 오인해 `{keyword}` 를 넣는 결함이 있었다. 그대로 두면
+        `is_timeline_search=로보락` 이 서버로 나간다. 조용히 이상한 요청을
+        보내느니 여기서 멈추고 고치는 법을 알려주는 편이 낫다.
+        """
+        query = (self.cfg.endpoints.get("search") or {}).get("query") or {}
+        bad = [
+            k for k, v in query.items()
+            if str(v) == "{keyword}"
+            and k.lower().replace("-", "_").startswith(self._FLAG_PREFIXES)
+        ]
+        if not bad:
+            return
+        raise DataHubError(
+            "검색 설정에 잘못된 값이 있습니다 — 기능 플래그에 검색어가 들어가 있습니다.\n"
+            f"  문제 파라미터: {', '.join(bad)}  (각각 '{{keyword}}' 로 되어 있음)\n"
+            "  이대로 요청하면 예) is_timeline_search=로보락 이 전송됩니다.\n"
+            "  → 검색을 실행한 HAR로 이 명령을 돌리면 실제 값으로 복구됩니다:\n"
+            "     python3 tools/repair_search_query.py --har page.har            # 미리보기\n"
+            "     python3 tools/repair_search_query.py --har page.har --write    # 적용"
+        )
+
     # ---------- 고수준: 검색 ----------
     def search(
         self,
@@ -220,6 +248,7 @@ class DataHubClient:
                 "  → 브라우저에서 실제로 검색을 한 번 한 뒤 그 HAR로\n"
                 "     `hsbot devtools --har search.har --force` 를 돌리면 자동으로 추가됩니다."
             )
+        self._check_search_query()
         collected: list[BroadcastRef] = []
         seen: set[tuple[str, str, str]] = set()
         for page in range(1, max(1, pages) + 1):
@@ -227,6 +256,9 @@ class DataHubClient:
                 keyword=keyword,
                 query=keyword,
                 page=page,
+                # offset은 '쪽 번호'가 아니라 '건너뛸 개수'다. 둘을 같은 값으로 보내면
+                # 2페이지를 요청해도 2건만 건너뛴 거의 같은 목록이 돌아온다.
+                offset=(page - 1) * size,
                 size=size,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,

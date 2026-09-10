@@ -611,28 +611,61 @@ def _templatize(query: dict[str, str], product_key: str | None) -> dict[str, str
     return out
 
 
+_BOOLISH = {"true", "false", "1", "0", "y", "n", "yes", "no"}
+# is_/has_/use_ 로 시작하는 파라미터는 검색어가 아니라 기능 on/off 스위치다.
+_FLAG_PREFIXES = ("is_", "has_", "use_", "enable_", "with_", "include_", "no_")
+
+
+def _is_flag_param(key: str, value: str) -> bool:
+    """검색어 자리로 오해하면 안 되는 '기능 플래그' 인가.
+
+    `is_timeline_search=false` 처럼 이름에 'search' 가 들어가지만 실제로는
+    불리언 스위치인 파라미터가 있다. 이름만 보고 `{keyword}` 로 바꾸면
+    `is_timeline_search=로보락` 이라는 엉뚱한 요청이 나간다.
+    """
+    lk = key.lower().replace("-", "_")
+    return lk.startswith(_FLAG_PREFIXES) or str(value).strip().lower() in _BOOLISH
+
+
 def _templatize_search(query: dict[str, str], keyword: str | None) -> dict[str, str]:
     """검색 요청의 쿼리를 템플릿화한다.
 
-    관측된 검색어 자리에는 `{keyword}`, 페이지/개수 자리에는 `{page}` `{size}` 가 들어간다.
+    판정 순서가 중요하다.
+
+    1. **검색어는 값으로 찾는다.** 관측된 검색어와 값이 똑같은 파라미터만
+       `{keyword}` 로 바꾼다. 이름(`...search...`)에 기대면 `is_timeline_search`
+       같은 플래그까지 휩쓸린다. 이름 힌트는 검색어를 아예 못 찾았을 때의
+       마지막 수단으로만 쓰고, 그때도 플래그는 제외한다.
+    2. `size` 를 `page` 보다 먼저 본다 — `pageSize` 는 `page` 를 포함한다.
+    3. `offset` 과 `page` 를 구분한다. offset은 '건너뛸 개수', page는 '쪽 번호'라
+       의미가 다르다. 섞으면 2페이지를 요청해도 2건만 건너뛴 같은 목록이 온다.
+
     나머지(정렬, 카테고리 필터 등)는 관측값 그대로 둔다 — 브라우저가 보낸 값을
     그대로 재현하는 편이 서버가 거부할 확률이 낮다.
     """
+    # 값으로 검색어를 특정하지 못했을 때만 이름에 기댄다.
+    name_fallback = not keyword
+
     out: dict[str, str] = {}
     for k, v in query.items():
-        if keyword and v == keyword:
+        sv = str(v)
+        if keyword and sv == keyword:
             out[k] = "{keyword}"
-        elif _hinted(k, ("keyword", "query", "search", "word", "term")) or k.lower() == "q":
+        elif (
+            name_fallback
+            and not _is_flag_param(k, sv)
+            and (_hinted(k, ("keyword", "query", "search", "word", "term")) or k.lower() == "q")
+        ):
             out[k] = "{keyword}"
-        # size 를 page 보다 먼저 본다. 'pageSize' 는 'page' 를 포함하므로
-        # 순서를 뒤집으면 개수 파라미터가 페이지 번호로 잘못 잡힌다.
-        elif _hinted(k, ("size", "limit", "count", "per_page", "perpage", "rows")) and str(v).isdigit():
+        elif _hinted(k, ("size", "limit", "count", "per_page", "perpage", "rows")) and sv.isdigit():
             out[k] = "{size}"
-        elif _hinted(k, ("page", "pageno", "page_no", "offset")) and str(v).isdigit():
+        elif _hinted(k, ("offset", "skip", "start_index", "start_row")) and sv.isdigit():
+            out[k] = "{offset}"
+        elif _hinted(k, ("page", "pageno", "page_no", "pageindex")) and sv.isdigit():
             out[k] = "{page}"
-        elif "start" in k.lower() and _ISO.match(str(v)):
+        elif "start" in k.lower() and _ISO.match(sv):
             out[k] = "{start_datetime}"
-        elif "end" in k.lower() and _ISO.match(str(v)):
+        elif "end" in k.lower() and _ISO.match(sv):
             out[k] = "{end_datetime}"
         else:
             out[k] = v
