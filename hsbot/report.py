@@ -9,7 +9,10 @@ from typing import Any
 from .compare import ComparisonResult
 from .metrics import BroadcastMetrics
 
-CHANNEL_COLORS = ["#5aa9ff", "#ffb454", "#5fd7a4", "#ff7b9c", "#b48cff", "#f2d06b"]
+CHANNEL_COLORS = [
+    "#5aa9ff", "#ffb454", "#5fd7a4", "#ff7b9c", "#b48cff", "#f2d06b",
+    "#6bd1e0", "#e08a6b", "#9fd66b",
+]
 
 CSS = """
 :root{

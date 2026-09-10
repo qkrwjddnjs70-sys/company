@@ -82,14 +82,14 @@ def search_broadcasts(client: DataHubClient, keyword: str, *, limit: int = 20) -
         if prev is None or (r.start_datetime or "") > (prev.start_datetime or ""):
             by_channel[r.channel] = r
 
-    broadcasts: list[dict] = []
+    by_channel_broadcasts: dict[str, list[dict]] = {}
     for channel, rep in by_channel.items():
         try:
             history = client.list_broadcasts(rep.product_key, use_cache=True)
         except DataHubError:
             continue
-        for h in history:
-            broadcasts.append({
+        items = [
+            {
                 "broadcast_id": h.get("broadcast_id"),
                 "channel": channel,
                 "channel_name": channel_display(channel, rep.channel_name),
@@ -98,7 +98,24 @@ def search_broadcasts(client: DataHubClient, keyword: str, *, limit: int = 20) -
                 "start_datetime": h.get("start_datetime") or "",
                 "end_datetime": h.get("end_datetime") or "",
                 "duration_min": h.get("duration_min"),
-            })
+            }
+            for h in history
+        ]
+        items.sort(key=lambda b: b["start_datetime"], reverse=True)
+        by_channel_broadcasts[channel] = items
+
+    # 채널별로 번갈아 채워서(라운드로빈), 방송이 많은 한 채널이 목록을 독식해
+    # 다른 채널이 밀려나는 일을 막는다 — 3개 이상 채널을 골라 비교하기 쉬워진다.
+    broadcasts: list[dict] = []
+    queues = [q for q in by_channel_broadcasts.values() if q]
+    idx = 0
+    while queues and len(broadcasts) < limit:
+        queue = queues[idx % len(queues)]
+        broadcasts.append(queue.pop(0))
+        if not queue:
+            queues.pop(idx % len(queues))
+        else:
+            idx += 1
     broadcasts.sort(key=lambda b: b["start_datetime"], reverse=True)
     return {"keyword": keyword, "model": model, "broadcasts": broadcasts[:limit]}
 
@@ -153,7 +170,7 @@ td:first-child{width:34px;text-align:center}
 </style></head>
 <body><div class="wrap">
 <h1>키워드로 방송 찾아 비교하기</h1>
-<p class="sub">실적(추정 매출)은 아직 표시하지 않습니다 — 최근 방송 최대 20개를 나열합니다. 2개 이상 선택하면 그 방송들의 자막을 자동으로 읽어 채널별 화법을 비교합니다.</p>
+<p class="sub">실적(추정 매출)은 아직 표시하지 않습니다 — 최근 방송 최대 20개를 나열합니다. 2개 이상 선택하면 비교할 수 있고, 채널이 많을수록(3개 이상) 어느 채널이 무엇을 밀었는지 더 뚜렷하게 갈립니다.</p>
 <form id="f"><input id="kw" placeholder="예: 로보락 s9 max ultra" required>
 <button type="submit">검색</button></form>
 <div id="status"></div>
