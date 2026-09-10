@@ -615,7 +615,19 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--end", default=None)
     d.set_defaults(func=cmd_devtools)
 
+    w = sub.add_parser("webapp", help="키워드→채널별 최근 방송→선택→자동 리포트 웹 UI")
+    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--port", type=int, default=8765)
+    w.set_defaults(func=cmd_webapp)
+
     return p
+
+
+def cmd_webapp(args) -> int:
+    from .webapp import run
+
+    run(host=args.host, port=args.port)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

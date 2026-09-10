@@ -48,6 +48,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 .num{font-variant-numeric:tabular-nums}
 .bar{position:relative;height:16px;border-radius:4px;background:rgba(255,255,255,.05);overflow:hidden;min-width:70px}
 .bar>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;display:block}
+.lead-cell{background:rgba(255,255,255,.06);border-radius:8px;font-weight:600}
 .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--tx2);margin:6px 0 2px}
 .legend b{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .hm{display:grid;gap:2px;margin:2px 0}
@@ -58,6 +59,16 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:13px;color:#ffd9a3}
 ul{margin:6px 0;padding-left:20px} li{margin:3px 0}
 footer{margin-top:44px;color:var(--tx3);font-size:13px;border-top:1px solid var(--line);padding-top:14px}
+.clickable{cursor:pointer}
+.clickable:hover{outline:1px solid rgba(255,255,255,.25)}
+#quoteOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50;align-items:center;justify-content:center;padding:20px}
+#quoteOverlay.open{display:flex}
+#quoteModal{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:640px;width:100%;max-height:80vh;overflow-y:auto;padding:18px 20px}
+#quoteModal h3{margin:0 0 4px}
+#quoteModal .close{float:right;cursor:pointer;color:var(--tx3);font-size:20px;line-height:1}
+.qline{padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.08);font-size:14px}
+.qline .t{color:var(--tx3);font-size:12.5px;margin-right:8px}
+.qline mark{background:rgba(90,169,255,.28);color:inherit;border-radius:3px;padding:0 2px}
 """
 
 
@@ -73,10 +84,6 @@ def _fmt(v: Any, digits: int = 1) -> str:
     if isinstance(v, int):
         return f"{v:,}"
     return _e(v)
-
-
-def _idx_class(v: float) -> str:
-    return "up" if v >= 115 else ("dn" if v <= 85 else "mid")
 
 
 def _bar(pct: float, color: str) -> str:
@@ -148,31 +155,38 @@ def _volume_table(res: ComparisonResult) -> str:
 def _axis_table(res: ComparisonResult, colors: dict[str, str]) -> str:
     ids = res.ids
     name = {m.broadcast_id: m.channel_name for m in res.metrics}
-    head = "".join(f"<th colspan='2' style='text-align:center;color:{colors[b]}'>{_e(name[b])}</th>" for b in ids)
-    sub = "".join("<th>분당</th><th>지수</th>" for _ in ids)
+    head = "".join(f"<th style='text-align:center;color:{colors[b]}'>{_e(name[b])}</th>" for b in ids)
     rows = []
     for a in res.axes:
         mx = max(a.values.values()) or 1.0
+        leader_name = name.get(a.leader, "–")
+        leader_color = colors.get(a.leader, "var(--tx)")
         cells = []
         for b in ids:
             v = a.values.get(b, 0.0)
-            ix = a.index.get(b, 100.0)
+            is_leader = b == a.leader and v > 0
+            crown = " 👑" if is_leader else ""
+            cls = "lead-cell" if is_leader else ""
+            has_quotes = bool(res.by_id(b).axes.get(a.key) and res.by_id(b).axes[a.key].example_lines)
+            click_attrs = f" data-bid='{_e(b)}' data-axis='{_e(a.key)}'" if has_quotes else ""
+            cls2 = f"{cls} clickable".strip() if has_quotes else cls
             cells.append(
-                f"<td class='num' style='min-width:96px'>{_bar(100 * v / mx, a.color)}"
-                f"<span class='sub num'>{v:.2f}</span></td>"
-                f"<td class='num {_idx_class(ix)}'>{ix:.0f}</td>"
+                f"<td class='num {cls2}' style='min-width:110px'{click_attrs}>{_bar(100 * v / mx, colors[b])}"
+                f"<span class='sub num'>{v:.2f}{crown}</span></td>"
             )
         flag = " 🔺" if a.key in res.differentiating_axes else ""
         rows.append(
             f"<tr><td><b style='color:{a.color}'>■</b> {_e(a.label)}{flag}"
-            f"<div class='sub'>편차 ×{a.spread:.2f}</div></td>{''.join(cells)}</tr>"
+            f"<div class='sub'>1위 <b style='color:{leader_color}'>{_e(leader_name)}</b> · 편차 ×{a.spread:.2f}</div>"
+            f"</td>{''.join(cells)}</tr>"
         )
     return f"""<div class="scroll"><table>
-<thead><tr><th rowspan="2">소구축</th>{head}</tr><tr>{sub}</tr></thead>
+<thead><tr><th>소구축</th>{head}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table></div>
-<p class="sub">· <b>분당</b> = 해당 축 키워드가 1분에 몇 번 등장했는지. <b>지수</b> = 비교 대상 평균을 100으로 놓은 상대값.
+<p class="sub">· 막대는 <b>분당 등장 횟수</b>이며 범례와 같은 채널 색으로 표시합니다. 👑 = 그 축을 가장 강하게 민 채널.
 · 🔺 표시는 채널 간 편차가 큰 축, 즉 <b>판매 전략이 실제로 갈린 지점</b>입니다.
-· 축은 상호배타적이지 않습니다. 한 문장이 가격·긴급을 동시에 자극하면 양쪽에 카운트됩니다.</p>"""
+· 축은 상호배타적이지 않습니다. 한 문장이 가격·긴급을 동시에 자극하면 양쪽에 카운트됩니다.
+· 셀 테두리가 밝아지는(클릭 가능한) 칸을 누르면 그 채널이 실제로 뭐라고 말했는지(멘트) 볼 수 있습니다.</p>"""
 
 
 def _numeric_table(res: ComparisonResult) -> str:
@@ -262,6 +276,22 @@ def _distinctive(res: ComparisonResult, colors: dict[str, str]) -> str:
     )
 
 
+def _quotes_json(res: ComparisonResult) -> str:
+    data: dict[str, dict[str, Any]] = {}
+    for m in res.metrics:
+        axes_out = {}
+        for key, am in m.axes.items():
+            if am.example_lines:
+                axes_out[key] = {
+                    "label": am.label,
+                    "channel": m.channel_name,
+                    "lines": am.example_lines,
+                }
+        if axes_out:
+            data[m.broadcast_id] = axes_out
+    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+
+
 def render(
     res: ComparisonResult,
     *,
@@ -276,6 +306,7 @@ def render(
     diff_labels = [a.label for a in res.axes if a.key in res.differentiating_axes] or ["없음"]
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     ttl = title or f"{res.product_name} — 홈쇼핑 채널별 판매 화법 비교"
+    quotes_json = _quotes_json(res)
 
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -321,7 +352,56 @@ def render(
 </div>
 
 <footer>홈쇼핑 비교봇 · hsbot</footer>
-</div></body></html>"""
+</div>
+
+<div id="quoteOverlay">
+  <div id="quoteModal">
+    <span class="close" id="quoteClose">&times;</span>
+    <h3 id="quoteTitle"></h3>
+    <div class="sub" id="quoteSub" style="margin-bottom:10px"></div>
+    <div id="quoteBody"></div>
+  </div>
+</div>
+<script>
+const QUOTES = {quotes_json};
+function mmss(sec) {{
+  sec = Math.max(0, Math.round(sec || 0));
+  return Math.floor(sec/60) + ':' + String(sec%60).padStart(2,'0');
+}}
+function esc(s) {{
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}}
+function highlight(text, terms) {{
+  let out = esc(text);
+  (terms || []).forEach(t => {{
+    if (!t) return;
+    const re = new RegExp(esc(t).replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&'), 'g');
+    out = out.replace(re, m => '<mark>' + m + '</mark>');
+  }});
+  return out;
+}}
+function showQuotes(bid, axisKey) {{
+  const entry = (QUOTES[bid] || {{}})[axisKey];
+  if (!entry) return;
+  document.getElementById('quoteTitle').textContent = entry.channel + ' · ' + entry.label;
+  document.getElementById('quoteSub').textContent = entry.lines.length + '건의 관련 발화';
+  document.getElementById('quoteBody').innerHTML = entry.lines.map(l =>
+    `<div class="qline"><span class="t">${{mmss(l.t)}}</span>${{highlight(l.text, l.terms)}}</div>`
+  ).join('');
+  document.getElementById('quoteOverlay').classList.add('open');
+}}
+document.addEventListener('click', (e) => {{
+  const td = e.target.closest('[data-bid][data-axis]');
+  if (td) showQuotes(td.dataset.bid, td.dataset.axis);
+}});
+document.getElementById('quoteClose').addEventListener('click', () => {{
+  document.getElementById('quoteOverlay').classList.remove('open');
+}});
+document.getElementById('quoteOverlay').addEventListener('click', (e) => {{
+  if (e.target.id === 'quoteOverlay') e.target.classList.remove('open');
+}});
+</script>
+</body></html>"""
 
 
 def render_json(res: ComparisonResult) -> str:

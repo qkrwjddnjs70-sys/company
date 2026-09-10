@@ -31,6 +31,7 @@ class AxisMetric:
     peak_bucket_idx: int | None = None   # 가장 집중된 구간
     peak_bucket_hits: int = 0
     top_terms: list[tuple[str, int]] = field(default_factory=list)
+    example_lines: list[dict[str, Any]] = field(default_factory=list)  # {"t": sec, "text": ..., "terms": [...]}
 
 
 @dataclass
@@ -114,6 +115,7 @@ def analyze(
         first_sec: float | None = None
         buckets = [0] * n_buckets
         term_counts: dict[str, int] = {}
+        examples: list[dict[str, Any]] = []
         for s in segs:
             h = ax.hits(s.text)
             if not h:
@@ -126,6 +128,8 @@ def analyze(
             buckets[bi] += len(h)
             for term in h:
                 term_counts[term] = term_counts.get(term, 0) + 1
+            if len(examples) < 30:
+                examples.append({"t": s.start_sec, "text": s.text, "terms": sorted(set(h))})
         peak_idx = max(range(n_buckets), key=lambda i: buckets[i]) if hits_total else None
         axis_metrics[ax.key] = AxisMetric(
             key=ax.key,
@@ -138,6 +142,7 @@ def analyze(
             peak_bucket_idx=peak_idx,
             peak_bucket_hits=buckets[peak_idx] if peak_idx is not None else 0,
             top_terms=sorted(term_counts.items(), key=lambda kv: -kv[1])[:8],
+            example_lines=examples,
         )
         axis_bucket_hits[ax.key] = buckets
 

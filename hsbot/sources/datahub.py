@@ -155,6 +155,8 @@ class DataHubClient:
 
     def get(self, name: str, *, use_cache: bool = True, **params) -> Any:
         url = self._url(name, params)
+        method = (self.cfg.endpoints.get(name) or {}).get("method", "GET").upper()
+        # POST라도 응답이 안정적이면(자막처럼 broadcast_id로 고정된 리소스) 캐시를 쓴다.
         cp = self._cache_path(url)
         if use_cache and cp and os.path.exists(cp):
             with open(cp, encoding="utf-8") as f:
@@ -167,7 +169,8 @@ class DataHubClient:
             if gap < self.cfg.rate_limit_sec:
                 time.sleep(self.cfg.rate_limit_sec - gap)
             try:
-                req = urllib.request.Request(url, headers=self._headers())
+                body = b"" if method != "GET" else None
+                req = urllib.request.Request(url, data=body, headers=self._headers(), method=method)
                 with urllib.request.urlopen(req, timeout=self.cfg.timeout_sec) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 self._last_call = time.monotonic()
@@ -314,6 +317,48 @@ class DataHubClient:
             bc.price = ref.price
         bc.extra["discovered_by"] = "search"
         return bc
+
+    # ---------- 고수준: 방송 이력(최근 방송일자, 금액 제외) ----------
+    def list_broadcasts(self, product_key: str, *, use_cache: bool = True) -> list[dict[str, Any]]:
+        """상품 하나의 방송 이력을 최신순으로 반환한다.
+
+        `/next-api/subtitle/products/{product_key}/broadcasts` 는 금액(실적) 없이
+        `{broadcast_id, channel, start_datetime, end_datetime, duration_min}` 만 준다.
+        실적은 별도 소스가 필요해 아직 여기서 다루지 않는다.
+        """
+        raw = self.get("broadcast_list", use_cache=use_cache, product_key=product_key)
+        items = raw if isinstance(raw, list) else first_found(raw, ["data", "items", "results"], [])
+        if not isinstance(items, list):
+            items = []
+        out = [dict(it) for it in items if isinstance(it, dict)]
+        out.sort(key=lambda it: str(it.get("start_datetime") or ""), reverse=True)
+        return out
+
+    def fetch_by_broadcast_id(
+        self,
+        broadcast_id: Any,
+        *,
+        product_key: str,
+        channel: str,
+        start_datetime: str,
+        end_datetime: str = "",
+        product_name: str | None = None,
+        use_cache: bool = True,
+    ) -> Broadcast:
+        """방송 이력에서 고른 broadcast_id 하나의 자막을 가져온다.
+
+        실제 자막 엔드포인트는 product_key/시간대가 아니라 broadcast_id로만 찾는다.
+        """
+        sub_raw = self.get("subtitle", use_cache=use_cache, broadcast_id=broadcast_id)
+        return self.to_broadcast(
+            sub_raw,
+            None,
+            product_key=product_key,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime or start_datetime,
+            channel=channel,
+            product_name=product_name,
+        )
 
     # ---------- 고수준: 수집 ----------
     def fetch_broadcast(

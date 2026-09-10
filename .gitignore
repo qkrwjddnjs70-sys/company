@@ -7,3 +7,5 @@ config/datahub.json
 config/targets.json
 .secrets/
 *.har
+.claude/
+tmp/

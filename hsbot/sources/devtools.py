@@ -188,6 +188,10 @@ def find_array_candidates(obj: Any, *, min_len: int = 3) -> list[ArrayCandidate]
                         time_keys.append(k)
                     elif any(h in lk for h in TIME_KEY_HINTS) and time_ratio >= 0.3:
                         time_keys.append(k)
+                    elif lk == "t" and time_ratio >= 0.5:
+                        # "t" 는 substring 힌트로 잡히지 않는다 (다른 키에 흔한 글자라
+                        # TIME_KEY_HINTS 에 넣으면 오탐이 늘어난다). 정확히 일치할 때만 인정.
+                        time_keys.append(k)
                     if any(h in lk for h in SPEAKER_KEY_HINTS):
                         spk_keys.append(k)
                 # 화자 컬럼도 한글 문자열이라 본문으로 오인된다. 명시적으로 제외한다.
