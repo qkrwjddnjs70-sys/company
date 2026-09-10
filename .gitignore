@@ -3,7 +3,6 @@ __pycache__/
 .cache/
 data/
 out/
-config/datahub.json
 config/targets.json
 .secrets/
 *.har

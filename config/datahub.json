@@ -1,0 +1,127 @@
+{
+  "_note": [
+    "F12 개발자도구 관측 결과로 자동 생성된 초안입니다.",
+    "쿠키는 이 파일에 없습니다. 환경변수로 주입하세요:",
+    "  export HSMOA_DATAHUB_COOKIE=\"$(cat .secrets/datahub.cookie)\"",
+    "쿠키는 로그인 세션이라 만료됩니다. 401/403이 나면 F12에서 다시 복사하세요.",
+    "검색어로 관측된 값: '로보락' → '{keyword}' 로 템플릿화했습니다."
+  ],
+  "base_url": "https://datahub.hsmoa.com",
+  "api_key_env": "HSMOA_DATAHUB_COOKIE",
+  "auth": {
+    "type": "cookie",
+    "cookie_env": "HSMOA_DATAHUB_COOKIE",
+    "extra_headers": {
+      "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+      "origin": "https://datahub.hsmoa.com",
+      "referer": "https://datahub.hsmoa.com/product/cjmall_2079108338?tv_channel=cjmall&start_datetime=2026-08-30T21%3A35%3A00%2B09%3A00&end_datetime=2026-08-30T22%3A40%3A00%2B09%3A00&tab=subtitle",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+    }
+  },
+  "timeout_sec": 30.0,
+  "max_retries": 4,
+  "rate_limit_sec": 1.0,
+  "cache_dir": ".cache/datahub",
+  "endpoints": {
+    "subtitle": {
+      "method": "POST",
+      "path": "/next-api/subtitle/broadcasts/{broadcast_id}/open",
+      "query": {}
+    },
+    "broadcast_list": {
+      "method": "GET",
+      "path": "/next-api/subtitle/products/{product_key}/broadcasts",
+      "query": {}
+    },
+    "search": {
+      "path": "/next-api/search",
+      "query": {
+        "query": "{keyword}",
+        "offset": "{page}",
+        "limit": "{size}",
+        "source": "tvshop",
+        "price_min": "0",
+        "price_max": "0",
+        "is_timeline_search": "{keyword}",
+        "platform": "web",
+        "is_cache_use": "true",
+        "is_compare_search": "{keyword}",
+        "is_reco_search": "{keyword}",
+        "is_commerce_only": "false",
+        "refine_compare_info": "true",
+        "sale_status": "on_sale,live_sale",
+        "start_date": "{start_datetime}",
+        "end_date": "{end_datetime}",
+        "sort_by": "recent"
+      }
+    }
+  },
+  "mapping": {
+    "segments": {
+      "list_paths": [
+        "segments"
+      ],
+      "text_paths": [
+        "text"
+      ],
+      "start_paths": [
+        "t"
+      ],
+      "end_paths": [
+        "end_time"
+      ],
+      "speaker_paths": [
+        "speaker"
+      ]
+    },
+    "broadcast": {
+      "product_name_paths": [
+        "data.product_name",
+        "data.name",
+        "product_name",
+        "name",
+        "title"
+      ],
+      "price_paths": [
+        "data.price",
+        "data.sale_price",
+        "price"
+      ],
+      "channel_name_paths": [
+        "data.channel_name",
+        "channel_name"
+      ]
+    },
+    "search": {
+      "list_paths": [
+        "results"
+      ],
+      "product_key_paths": [
+        "pdid",
+        "broadcast_key"
+      ],
+      "product_name_paths": [
+        "name"
+      ],
+      "channel_paths": [
+        "tv_channel",
+        "tv_channel_type"
+      ],
+      "channel_name_paths": [],
+      "start_paths": [
+        "start_datetime"
+      ],
+      "end_paths": [
+        "end_datetime"
+      ],
+      "price_paths": [
+        "sale_price",
+        "price"
+      ],
+      "url_paths": [
+        "url",
+        "link"
+      ]
+    }
+  }
+}
