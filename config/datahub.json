@@ -77,6 +77,14 @@
       ],
       "speaker_paths": [
         "speaker"
+      ],
+      "kinds_paths": [
+        "kinds"
+      ]
+    },
+    "rhythm": {
+      "timeline_paths": [
+        "timeline"
       ]
     },
     "broadcast": {

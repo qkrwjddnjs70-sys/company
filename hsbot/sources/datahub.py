@@ -470,6 +470,7 @@ class DataHubClient:
         start_paths = seg_map.get("start_paths", ["start_sec", "start_time", "startTime", "offset"])
         end_paths = seg_map.get("end_paths", ["end_sec", "end_time", "endTime"])
         speaker_paths = seg_map.get("speaker_paths", ["speaker", "host"])
+        kinds_paths = seg_map.get("kinds_paths", ["kinds"])
 
         segments: list[Segment] = []
         for it in items:
@@ -486,15 +487,25 @@ class DataHubClient:
                 end = to_seconds(raw_end, origin=origin) if raw_end is not None else None
             except ValueError:
                 end = None
+            raw_kinds = first_present(it, kinds_paths)
+            kinds = [str(k) for k in raw_kinds] if isinstance(raw_kinds, list) else []
             segments.append(
                 Segment(
                     start_sec=round(float(start), 3),
                     end_sec=end,
                     text=str(body).strip(),
                     speaker=first_present(it, speaker_paths),
+                    kinds=kinds,
                 )
             )
         segments.sort(key=lambda s: s.start_sec)
+
+        # 자막 API가 자체적으로 매기는 분당 판촉 강도('방송 리듬'). 있으면 그대로 보존해 두고
+        # metrics 단계에서 우리 축(키워드) 분석과 나란히 놓아 비교한다.
+        rhythm_map = mp.get("rhythm", {})
+        timeline_paths = rhythm_map.get("timeline_paths", ["timeline"])
+        raw_timeline = first_present(sub_raw, timeline_paths)
+        rhythm_timeline = raw_timeline if isinstance(raw_timeline, list) else []
 
         name = product_name or first_present(
             meta_raw or {}, meta_map.get("product_name_paths", ["data.name", "name", "title"]), product_key
@@ -515,7 +526,7 @@ class DataHubClient:
             end_datetime=end_datetime,
             segments=segments,
             source="datahub_api",
-            extra={"n_raw_items": len(items)},
+            extra={"n_raw_items": len(items), "rhythm_timeline": rhythm_timeline},
         )
 
 

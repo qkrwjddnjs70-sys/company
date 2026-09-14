@@ -72,6 +72,13 @@ footer{margin-top:44px;color:var(--tx3);font-size:13px;border-top:1px solid var(
 .qline{padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.08);font-size:14px}
 .qline .t{color:var(--tx3);font-size:12.5px;margin-right:8px}
 .qline mark{background:rgba(90,169,255,.28);color:inherit;border-radius:3px;padding:0 2px}
+.rhythm{margin:2px 0}
+.rhythm .rrow{display:flex;align-items:flex-end;gap:1px;height:52px;padding:0 2px}
+.rhythm .rbar{flex:1 1 0;min-width:2px;border-radius:2px 2px 0 0;align-self:flex-end;position:relative;cursor:pointer}
+.rhythm .rbar:hover{outline:1px solid rgba(255,255,255,.5)}
+.rhythm .rbar.miss::after{content:'';position:absolute;left:50%;bottom:-6px;width:5px;height:5px;
+  margin-left:-2.5px;border-radius:50%;background:var(--bad)}
+.rhythm .raxis{margin-top:8px;display:flex;justify-content:space-between;font-size:11px;color:var(--tx3)}
 """
 
 
@@ -279,6 +286,81 @@ def _distinctive(res: ComparisonResult, colors: dict[str, str]) -> str:
     )
 
 
+def _rhythm_json(res: ComparisonResult) -> str:
+    axis_label = {a.key: a.label for a in res.axes}
+    data: dict[str, list[dict[str, Any]]] = {}
+    for m in res.metrics:
+        if not m.rhythm:
+            continue
+        data[m.broadcast_id] = [
+            {
+                "m": r.m,
+                "top_axis": r.top_axis,
+                "top_axis_label": axis_label.get(r.top_axis) if r.top_axis else None,
+                "top_axis_hits": r.top_axis_hits,
+                "native_pct": r.native_pct,
+                "unmatched": r.unmatched,
+                "lines": r.lines,
+            }
+            for r in m.rhythm
+        ]
+    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _rhythm_section(res: ComparisonResult, colors: dict[str, str]) -> str:
+    axis_color = {a.key: a.color for a in res.axes}
+    axis_label = {a.key: a.label for a in res.axes}
+    blocks = []
+    any_native = False
+    any_unmatched = False
+    for m in res.metrics:
+        if not m.rhythm:
+            continue
+        any_native = any_native or m.has_native_rhythm
+        mx_chars = max((r.chars for r in m.rhythm), default=1) or 1
+        mx_hits = max((r.top_axis_hits for r in m.rhythm), default=1) or 1
+        bars = []
+        for r in m.rhythm:
+            color = axis_color.get(r.top_axis, "#5f6b78")
+            if r.native_pct is not None:
+                strength = max(0.15, min(1.0, r.native_pct / 100))
+            elif r.top_axis_hits:
+                strength = max(0.15, min(1.0, r.top_axis_hits / mx_hits))
+            else:
+                strength = 0.12
+            height = max(6.0, 52.0 * (r.chars / mx_chars))
+            cls = "rbar miss" if r.unmatched else "rbar"
+            any_unmatched = any_unmatched or r.unmatched
+            title_bits = [f"{r.m}분"]
+            if r.top_axis:
+                title_bits.append(f"{axis_label.get(r.top_axis, r.top_axis)} {r.top_axis_hits}회")
+            if r.native_pct is not None:
+                title_bits.append(f"소스 판촉강도 {r.native_pct:.0f}%")
+            if r.unmatched:
+                title_bits.append("호스트 강조 O · 우리 축 매칭 X")
+            bars.append(
+                f"<div class='{cls}' style='height:{height:.0f}px;background:{color};opacity:{strength:.2f}' "
+                f"title='{_e(' · '.join(title_bits))}' data-bid='{_e(m.broadcast_id)}' data-m='{r.m}'></div>"
+            )
+        native_note = "소스 자체 판촉강도(%) 결합" if m.has_native_rhythm else "우리 축 키워드만 (소스 리듬 데이터 없음)"
+        blocks.append(f"""
+<div class="panel">
+  <h3 style="color:{colors[m.broadcast_id]};margin-top:0">{_e(m.channel_name)} <span class="sub">· {native_note}</span></h3>
+  <div class="rhythm"><div class="rrow">{''.join(bars)}</div>
+  <div class="raxis"><span>0분</span><span>{len(m.rhythm) - 1}분</span></div></div>
+</div>""")
+    if not blocks:
+        return "<p class='sub'>리듬 데이터 없음</p>"
+    legend_bits = "".join(f"<span><b style='background:{a.color}'></b>{_e(a.label)}</span>" for a in res.axes)
+    tail = (
+        "<p class='sub'>· 막대 색 = 그 분(分)에 가장 많이 매칭된 소구축, 막대 높이 = 발화 밀도."
+        + (" 진하기는 소스가 자체 태깅한 판촉 강도(%)를 반영합니다." if any_native else " 진하기는 그 분의 축 매칭 강도(상대값)입니다.")
+        + (" · <b style='color:var(--bad)'>●</b> = 소스가 강조로 태깅했지만 우리 키워드 사전은 못 잡은 지점(클릭해서 원문 확인)." if any_unmatched else "")
+        + " 막대를 누르면 그 분에 실제로 한 말을 볼 수 있습니다.</p>"
+    )
+    return f"<div class='legend' style='margin-bottom:10px'>{legend_bits}</div>" + "".join(blocks) + tail
+
+
 def _quotes_json(res: ComparisonResult) -> str:
     data: dict[str, dict[str, Any]] = {}
     for m in res.metrics:
@@ -310,6 +392,7 @@ def render(
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     ttl = title or f"{res.product_name} — 홈쇼핑 채널별 판매 화법 비교"
     quotes_json = _quotes_json(res)
+    rhythm_json = _rhythm_json(res)
 
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -336,13 +419,16 @@ def render(
 <h2>4. 방송 구성 타임라인</h2>
 {_timeline(res, colors)}
 
-<h2>5. 숫자 소구 (가격 · 할인율 · 할부)</h2>
+<h2>5. 방송 리듬 (소구축 × 호스트 강조 결합)</h2>
+{_rhythm_section(res, colors)}
+
+<h2>6. 숫자 소구 (가격 · 할인율 · 할부)</h2>
 {_numeric_table(res)}
 
-<h2>6. 채널별 차별 표현</h2>
+<h2>7. 채널별 차별 표현</h2>
 {_distinctive(res, colors)}
 
-<h2>7. 방법론과 한계</h2>
+<h2>8. 방법론과 한계</h2>
 <div class="panel">
 <ul>
 <li><b>정규화</b> — 편성 길이가 다르면 총량 비교가 왜곡되므로 모든 지표를 분당으로 환산합니다.</li>
@@ -350,6 +436,7 @@ def render(
 <li><b>키워드 사전 기반</b> — 문맥·반어·부정을 이해하지 못합니다. 예: "비싸지 않습니다"도 가격 축에 잡힙니다.</li>
 <li><b>형태소 분석기 미사용</b> — 조사 제거는 규칙 기반 근사입니다. 절대 빈도보다 <b>채널 간 상대 비교</b>에 쓰세요.</li>
 <li><b>자막 품질 의존</b> — 자동 음성인식 자막이면 오인식이 그대로 지표에 반영됩니다.</li>
+<li><b>소스 태깅은 블랙박스</b> — '방송 리듬'의 판촉강도(%)와 강조 태깅(kinds)은 소스가 자체 계산한 값으로, 정확한 알고리즘을 알 수 없습니다. 우리 키워드 사전과의 <b>불일치 지점</b>을 찾는 용도로만 쓰고, 절대값 자체를 과신하지 마세요.</li>
 <li><b>인과 해석 금지</b> — 이 리포트는 "어떻게 팔았나"를 재는 것이지 "그래서 잘 팔렸나"를 증명하지 않습니다. 매출 지표와 결합해야 의미가 생깁니다.</li>
 </ul>
 </div>
@@ -367,6 +454,7 @@ def render(
 </div>
 <script>
 const QUOTES = {quotes_json};
+const RHYTHM = {rhythm_json};
 function mmss(sec) {{
   sec = Math.max(0, Math.round(sec || 0));
   return Math.floor(sec/60) + ':' + String(sec%60).padStart(2,'0');
@@ -393,9 +481,28 @@ function showQuotes(bid, axisKey) {{
   ).join('');
   document.getElementById('quoteOverlay').classList.add('open');
 }}
+function showRhythm(bid, m) {{
+  const arr = RHYTHM[bid] || [];
+  const entry = arr.find(r => r.m === +m);
+  if (!entry) return;
+  document.getElementById('quoteTitle').textContent = entry.m + '분 구간';
+  const bits = [];
+  if (entry.top_axis_label) bits.push(entry.top_axis_label + ' 축 ' + entry.top_axis_hits + '회');
+  if (entry.native_pct != null) bits.push('소스 판촉강도 ' + Math.round(entry.native_pct) + '%');
+  if (entry.unmatched) bits.push('호스트 강조 O · 우리 축 매칭 X');
+  document.getElementById('quoteSub').textContent = bits.join(' · ') || '특이 매칭 없음';
+  document.getElementById('quoteBody').innerHTML = (entry.lines || []).map(l =>
+    `<div class="qline"><span class="t">${{mmss(l.t)}}</span>${{esc(l.text)}}` +
+    ((l.kinds && l.kinds.length) ? ` <span class="tag">${{l.kinds.map(esc).join(', ')}}</span>` : '') +
+    `</div>`
+  ).join('') || '<div class="sub">이 분에는 자막이 없습니다.</div>';
+  document.getElementById('quoteOverlay').classList.add('open');
+}}
 document.addEventListener('click', (e) => {{
   const td = e.target.closest('[data-bid][data-axis]');
-  if (td) showQuotes(td.dataset.bid, td.dataset.axis);
+  if (td) {{ showQuotes(td.dataset.bid, td.dataset.axis); return; }}
+  const rb = e.target.closest('.rbar[data-bid][data-m]');
+  if (rb) showRhythm(rb.dataset.bid, rb.dataset.m);
 }});
 document.getElementById('quoteClose').addEventListener('click', () => {{
   document.getElementById('quoteOverlay').classList.remove('open');

@@ -51,6 +51,27 @@ class NumericMetric:
 
 
 @dataclass
+class RhythmMinute:
+    """1분 단위 '방송 리듬' — 소스가 자체 태깅한 강조(kinds)와
+    우리 축(키워드) 분석을 나란히 놓아, 키워드만으론 못 잡는 강조를 드러낸다."""
+
+    m: int
+    t_sec: int
+    chars: int = 0
+    n_segments: int = 0
+    top_axis: str | None = None
+    top_axis_hits: int = 0
+    axis_hits: dict[str, int] = field(default_factory=dict)
+    native_segs: int | None = None    # 소스가 준 발화량(있으면)
+    native_promo: int | None = None   # 소스가 판촉으로 태깅한 줄 수
+    native_pct: float | None = None   # 소스 자체 판촉 강도(%)
+    native_quiet: bool = False
+    host_emphasized: bool = False     # 소스가 뭔가(kinds)를 강조 태깅한 분
+    unmatched: bool = False           # 강조는 있는데 우리 축 키워드가 하나도 못 잡음 ← 우리 약점
+    lines: list[dict[str, Any]] = field(default_factory=list)  # {"t","text","kinds"}
+
+
+@dataclass
 class BroadcastMetrics:
     broadcast_id: str
     channel: str
@@ -70,6 +91,8 @@ class BroadcastMetrics:
     bucket_sec: int
     timeline: list[dict[str, Any]]
     top_keywords: list[tuple[str, int]]
+    rhythm: list[RhythmMinute] = field(default_factory=list)
+    has_native_rhythm: bool = False
 
     def axis_vector(self, keys: list[str] | None = None) -> dict[str, float]:
         """채널 간 비교에 쓰는 분당 강도 벡터."""
@@ -85,6 +108,66 @@ class BroadcastMetrics:
 
 def _bucket_count(duration_sec: float, bucket_sec: int) -> int:
     return max(1, int((duration_sec + bucket_sec - 1) // bucket_sec))
+
+
+def _compute_rhythm(
+    segs: list, lex: Lexicon, native_timeline: list[dict[str, Any]], duration_sec: float
+) -> tuple[list[RhythmMinute], bool]:
+    """분 단위 '방송 리듬'. 우리 축 매칭과 소스 자체 태깅(kinds/timeline)을 나란히 놓는다.
+
+    호스트가 강조했다는 신호(kinds 태깅 또는 소스의 promo 카운트)가 있는데
+    우리 축 키워드는 하나도 걸리지 않은 분을 `unmatched`로 표시한다 —
+    '언어적 멘트만 읽는다'는 한계를 정량적으로 드러내는 지점이다.
+    """
+    n_minutes = max(1, int(duration_sec // 60) + 1)
+    native = {int(row.get("m", -1)): row for row in native_timeline if isinstance(row, dict)}
+    if native:
+        n_minutes = max(n_minutes, max(native) + 1)
+
+    by_minute: list[list] = [[] for _ in range(n_minutes)]
+    for s in segs:
+        mi = min(int(s.start_sec // 60), n_minutes - 1)
+        by_minute[mi].append(s)
+
+    out: list[RhythmMinute] = []
+    for i in range(n_minutes):
+        bucket = by_minute[i]
+        axis_hits: dict[str, int] = {}
+        for ax in lex:
+            n = sum(ax.count(s.text) for s in bucket)
+            if n:
+                axis_hits[ax.key] = n
+        top_axis, top_hits = max(axis_hits.items(), key=lambda kv: kv[1], default=(None, 0))
+        host_emphasized = any(s.kinds for s in bucket)
+        row = native.get(i)
+        lines = [
+            {"t": s.start_sec, "text": s.text, "kinds": list(s.kinds)}
+            for s in bucket
+            if s.kinds or lex_hits(lex, s.text)
+        ][:8] or [{"t": s.start_sec, "text": s.text, "kinds": list(s.kinds)} for s in bucket[:8]]
+        out.append(
+            RhythmMinute(
+                m=i,
+                t_sec=i * 60,
+                chars=sum(s.n_chars for s in bucket),
+                n_segments=len(bucket),
+                top_axis=top_axis,
+                top_axis_hits=top_hits,
+                axis_hits=axis_hits,
+                native_segs=row.get("segs") if row else None,
+                native_promo=row.get("promo") if row else None,
+                native_pct=row.get("pct") if row else None,
+                native_quiet=bool(row.get("quiet")) if row else False,
+                host_emphasized=host_emphasized,
+                unmatched=host_emphasized and not axis_hits,
+                lines=lines,
+            )
+        )
+    return out, bool(native)
+
+
+def lex_hits(lex: Lexicon, text: str) -> bool:
+    return any(ax.hits(text) for ax in lex)
 
 
 def analyze(
@@ -190,6 +273,10 @@ def analyze(
         for i in range(n_buckets)
     ]
 
+    rhythm, has_native_rhythm = _compute_rhythm(
+        segs, lex, bc.extra.get("rhythm_timeline", []), bc.duration_sec
+    )
+
     return BroadcastMetrics(
         broadcast_id=bc.broadcast_id,
         channel=bc.channel,
@@ -209,4 +296,6 @@ def analyze(
         bucket_sec=bucket_sec,
         timeline=timeline,
         top_keywords=tu.token_counts(bc.full_text).most_common(top_n),
+        rhythm=rhythm,
+        has_native_rhythm=has_native_rhythm,
     )

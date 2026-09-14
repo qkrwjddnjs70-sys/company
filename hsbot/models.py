@@ -21,6 +21,7 @@ class Segment:
     text: str
     end_sec: float | None = None
     speaker: str | None = None  # 쇼호스트/게스트 등 (제공되면)
+    kinds: list[str] = field(default_factory=list)  # 소스가 자체 태깅한 발화 종류 (있으면)
 
     @property
     def duration_sec(self) -> float | None:
