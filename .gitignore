@@ -4,6 +4,7 @@ __pycache__/
 data/
 out/
 config/targets.json
+config/trendbot.json
 .secrets/
 *.har
 .claude/

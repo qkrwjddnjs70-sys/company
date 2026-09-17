@@ -1,0 +1,29 @@
+{
+  "_note": [
+    "네이버는 실시간 급상승 검색어 API를 2021년에 폐지했습니다.",
+    "그래서 '급상승'은 아래 categories/watchlist에 등록해 둔 후보 키워드 안에서만 찾습니다.",
+    "categories는 네이버 쇼핑의 공식 분류가 아니라, 소싱 목적으로 직접 묶어 둔 그룹일 뿐입니다.",
+    "이 파일을 config/trendbot.json 으로 복사한 뒤 실제로 지켜보고 싶은 키워드로 채우세요."
+  ],
+  "spike": {
+    "recent_weeks": 2,
+    "baseline_weeks": 8,
+    "min_growth_pct": 30,
+    "min_ratio_floor": 1.0
+  },
+  "categories": [
+    {
+      "name": "생활가전",
+      "seed_keywords": ["로봇청소기", "무선청소기", "에어프라이어", "식기세척기", "제습기"]
+    },
+    {
+      "name": "뷰티/미용가전",
+      "seed_keywords": ["고데기", "마스크팩", "탈모샴푸", "니들프리", "제모기"]
+    },
+    {
+      "name": "캠핑/아웃도어",
+      "seed_keywords": ["캠핑의자", "감성캠핑", "차박텐트", "무시동히터"]
+    }
+  ],
+  "watchlist": ["가습기", "온열매트"]
+}

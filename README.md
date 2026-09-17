@@ -256,3 +256,90 @@ hsbot/
 tools/             합성 자막·검색HAR 생성기, 데모 스크립트
 tests/             112개 회귀 테스트 (전부 네트워크 없이 실행)
 ```
+
+---
+
+# trendbot — 네이버 검색 트렌드 소싱 인사이트
+
+고객이 무언가 필요할 때 가장 먼저 하는 행동은 네이버 검색이다. 그 검색어 추이가
+올라오는 걸 먼저 캐치해서 홈쇼핑 소싱에 활용하기 위한 도구. 네이버 데이터랩
+검색어트렌드 오픈API를 쓴다.
+
+두 가지 기능:
+
+1. **키워드 추이 조회** — 키워드를 입력하면 최근 3개년 월간 검색 비율을 연도별로
+   겹쳐서 보여준다(계절성·성장 여부를 한눈에 비교).
+2. **급상승 키워드 발견** — `config/trendbot.json`에 등록해 둔 후보 키워드(카테고리별
+   시드 키워드 + 직접 등록한 관심 키워드) 중, 최근 검색량이 평소보다 튄 것을 순위로
+   보여준다.
+
+> ⚠️ **네이버는 실시간 급상승 검색어 API를 2021년에 폐지했다.** 그래서 (2)는
+> "네이버가 모르는 검색어를 알려주는" 기능이 아니라, 미리 등록해 둔 후보 키워드
+> 안에서 스파이크(최근 N주 평균 vs 그 이전 M주 평균)를 계산하는 기능이다.
+> `config/trendbot.json`의 `categories`도 네이버 쇼핑의 공식 분류가 아니라
+> 사용자가 소싱 목적으로 직접 묶어 둔 키워드 그룹일 뿐이다.
+
+## 준비
+
+```bash
+cp config/trendbot.example.json config/trendbot.json   # 카테고리·관심 키워드 채우기
+export TRENDBOT_NAVER_CLIENT_ID="발급받은 클라이언트 ID"
+export TRENDBOT_NAVER_CLIENT_SECRET="발급받은 클라이언트 시크릿"
+```
+
+API 키는 [developers.naver.com](https://developers.naver.com) → 애플리케이션 등록 →
+'검색' API 사용 신청으로 발급받는다(데이터랩 검색어트렌드는 같은 키로 바로 쓸 수 있다).
+
+## 사용
+
+```bash
+# 웹 UI — 키워드 추이 + 급상승 대시보드
+python3 -m trendbot webapp
+# → http://127.0.0.1:8766
+
+# CLI로 바로 조회
+python3 -m trendbot trend "로봇청소기"
+python3 -m trendbot spikes
+```
+
+`spikes` 출력 예:
+
+```
+■ 급상승 키워드 — 후보 16개 중 2건 (최근 2주 vs 직전 8주)
+    신규 급증  캠핑의자              최근  8.2 / 이전  0.0  [캠핑/아웃도어]
+       +142%  무선청소기            최근 34.1 / 이전 14.1  [생활가전]
+```
+
+`config/trendbot.json`의 `spike` 항목으로 민감도를 조절한다:
+
+| 필드 | 의미 |
+|---|---|
+| `recent_weeks` | "최근"으로 볼 주 수 (기본 2주) |
+| `baseline_weeks` | "평소"로 볼 직전 주 수 (기본 8주) |
+| `min_growth_pct` | 이 증가율(%) 이상만 급상승으로 표시 (기본 30%) |
+| `min_ratio_floor` | 최근 평균이 이 값 미만이면 절대 검색량이 작은 잡음으로 보고 제외 |
+
+## 구조
+
+```
+trendbot/
+  naver_api.py    데이터랩 검색어트렌드 API 클라이언트 (stdlib만 사용, 일 단위 캐시)
+  pool.py         후보 키워드 풀 (카테고리 시드 + 관심 키워드) 설정 로딩
+  spike.py        급상승 판정 (최근 vs 직전 평균 비교)
+  yearly.py       월간 추이 → 연도별 겹침 피벗
+  webapp.py       다크 테마 단일 페이지 웹 UI (Flask 없이 stdlib http.server)
+  cli.py          trend / spikes / webapp 명령
+config/
+  trendbot.example.json   카테고리·관심 키워드·스파이크 임계값 예시
+tests/test_trendbot.py    14개 회귀 테스트 (네이버 API는 mock, 네트워크 없이 실행)
+```
+
+## 한계
+
+- **급상승은 후보 키워드 안에서만** 찾는다 — 위 경고 참고.
+- **`ratio`는 상대값이다.** 데이터랩 API는 구간 내 최대치를 100으로 둔 상대 검색
+  비율만 준다(절대 검색량 아님). 그래서 서로 다른 키워드의 `ratio`를 그대로 비교해
+  "A가 B보다 검색량이 많다"고 말할 수는 없다 — 증가율(추이)만 비교에 쓴다.
+- **하루 호출 한도.** 데이터랩 API는 하루 호출 한도가 있다. 후보 키워드가 많을수록
+  `spikes` 호출 1회가 여러 API 콜로 나뉘므로(그룹=키워드 1개 고정, 1콜당 5개),
+  같은 날 재조회는 캐시(`.cache/trendbot`)로 아낀다.
