@@ -11,10 +11,13 @@ import json
 import sys
 from datetime import date
 
+from .envfile import load_dotenv
 from .naver_api import NaverApiError, NaverDataLabClient, date_n_weeks_ago, date_n_years_ago
 from .pool import PoolConfig, PoolConfigError
 from .spike import rank_spikes
 from .yearly import yearly_overlay
+
+load_dotenv()
 
 
 def cmd_trend(args) -> int:

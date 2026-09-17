@@ -283,12 +283,20 @@ tests/             112개 회귀 테스트 (전부 네트워크 없이 실행)
 
 ```bash
 cp config/trendbot.example.json config/trendbot.json   # 카테고리·관심 키워드 채우기
-export TRENDBOT_NAVER_CLIENT_ID="발급받은 클라이언트 ID"
-export TRENDBOT_NAVER_CLIENT_SECRET="발급받은 클라이언트 시크릿"
+cp .env.example .env                                   # API 키 채우기 (.env는 git에 올라가지 않음)
+```
+
+`.env` 파일:
+
+```
+TRENDBOT_NAVER_CLIENT_ID=발급받은 클라이언트 ID
+TRENDBOT_NAVER_CLIENT_SECRET=발급받은 클라이언트 시크릿
 ```
 
 API 키는 [developers.naver.com](https://developers.naver.com) → 애플리케이션 등록 →
 '검색' API 사용 신청으로 발급받는다(데이터랩 검색어트렌드는 같은 키로 바로 쓸 수 있다).
+`cli.py`/`webapp.py`가 실행 시 `.env`를 자동으로 읽는다(이미 `export`로 설정된
+환경변수가 있으면 그 값이 우선한다).
 
 ## 사용
 

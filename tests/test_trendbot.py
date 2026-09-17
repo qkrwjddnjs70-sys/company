@@ -11,10 +11,46 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from trendbot.envfile import load_dotenv
 from trendbot.naver_api import NaverApiError, NaverDataLabClient, TrendPoint, TrendSeries, _chunked
 from trendbot.pool import PoolConfig, PoolConfigError
 from trendbot.spike import compute_spike, rank_spikes
 from trendbot.yearly import yearly_overlay
+
+
+class TestLoadDotenv(unittest.TestCase):
+    def _write(self, content: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".env")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_missing_file_returns_zero(self):
+        self.assertEqual(load_dotenv("/no/such/.env"), 0)
+
+    def test_parses_keys_skips_comments_and_blanks(self):
+        path = self._write(
+            '# 주석\n'
+            '\n'
+            'TRENDBOT_NAVER_CLIENT_ID=abc123\n'
+            'TRENDBOT_NAVER_CLIENT_SECRET="s3cret"\n'
+        )
+        os.environ.pop("TRENDBOT_NAVER_CLIENT_ID", None)
+        os.environ.pop("TRENDBOT_NAVER_CLIENT_SECRET", None)
+        self.addCleanup(os.environ.pop, "TRENDBOT_NAVER_CLIENT_ID", None)
+        self.addCleanup(os.environ.pop, "TRENDBOT_NAVER_CLIENT_SECRET", None)
+        loaded = load_dotenv(path)
+        self.assertEqual(loaded, 2)
+        self.assertEqual(os.environ["TRENDBOT_NAVER_CLIENT_ID"], "abc123")
+        self.assertEqual(os.environ["TRENDBOT_NAVER_CLIENT_SECRET"], "s3cret")
+
+    def test_existing_env_var_takes_precedence(self):
+        path = self._write("TRENDBOT_NAVER_CLIENT_ID=from_file\n")
+        os.environ["TRENDBOT_NAVER_CLIENT_ID"] = "from_shell"
+        self.addCleanup(os.environ.pop, "TRENDBOT_NAVER_CLIENT_ID", None)
+        load_dotenv(path)
+        self.assertEqual(os.environ["TRENDBOT_NAVER_CLIENT_ID"], "from_shell")
 
 
 class TestSpike(unittest.TestCase):

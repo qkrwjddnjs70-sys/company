@@ -20,10 +20,13 @@ import urllib.parse
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .envfile import load_dotenv
 from .naver_api import NaverApiError, NaverDataLabClient, date_n_weeks_ago, date_n_years_ago
 from .pool import PoolConfig, PoolConfigError
 from .spike import rank_spikes
 from .yearly import yearly_overlay
+
+load_dotenv()
 
 MAX_KEYWORDS_PER_REQUEST = 5  # 데이터랩 API 호출 1회 한도(그룹=키워드 1개 고정)
 

@@ -9,6 +9,7 @@
 검색어를 네이버가 알려주는" 기능이 아니라, config/trendbot.json에 등록해 둔
 후보 키워드 안에서 스파이크를 계산하는 기능이다 — README 참고.
 """
+from .envfile import load_dotenv
 from .naver_api import NaverDataLabClient, NaverApiError, TrendPoint, TrendSeries
 from .pool import PoolConfig, Category
 from .spike import SpikeResult, compute_spike, rank_spikes
@@ -16,6 +17,7 @@ from .yearly import yearly_overlay
 
 __version__ = "0.1.0"
 __all__ = [
+    "load_dotenv",
     "NaverDataLabClient", "NaverApiError", "TrendPoint", "TrendSeries",
     "PoolConfig", "Category",
     "SpikeResult", "compute_spike", "rank_spikes",
