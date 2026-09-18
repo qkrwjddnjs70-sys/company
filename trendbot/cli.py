@@ -15,34 +15,37 @@ from .envfile import load_dotenv
 from .naver_api import NaverApiError, NaverDataLabClient, date_n_weeks_ago, date_n_years_ago
 from .pool import PoolConfig, PoolConfigError
 from .spike import rank_spikes
-from .yearly import yearly_overlay
+from .yearly import weekly_overlay, yearly_overlay
 
 load_dotenv()
 
 
 def cmd_trend(args) -> int:
     client = NaverDataLabClient()
+    time_unit = "week" if args.weekly else "month"
+    overlay_fn = weekly_overlay if args.weekly else yearly_overlay
     start = date_n_years_ago(args.years).isoformat()
     end = date.today().isoformat()
     try:
-        series_map = client.search_trend(args.keywords, start_date=start, end_date=end, time_unit="month")
+        series_map = client.search_trend(args.keywords, start_date=start, end_date=end, time_unit=time_unit)
     except NaverApiError as e:
         print(f"[실패] {e}", file=sys.stderr)
         return 1
 
+    label = "주간" if args.weekly else "월간"
     for kw in args.keywords:
         series = series_map.get(kw)
         if series is None:
             print(f"'{kw}': 결과 없음", file=sys.stderr)
             continue
-        overlay = yearly_overlay(series)
-        print(f"\n■ '{kw}' — {start} ~ {end} 월간 검색 비율(연도별)")
+        overlay = overlay_fn(series)
+        print(f"\n■ '{kw}' — {start} ~ {end} {label} 검색 비율(연도별)")
         for year, values in overlay["years"].items():
             cells = "  ".join(f"{v:5.1f}" if v is not None else "   · " for v in values)
             print(f"  {year}: {cells}")
 
     if args.out:
-        payload = {kw: yearly_overlay(series_map[kw]) for kw in args.keywords if kw in series_map}
+        payload = {kw: overlay_fn(series_map[kw]) for kw in args.keywords if kw in series_map}
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         print(f"\n저장: {args.out}")
@@ -116,6 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("trend", help="키워드의 최근 N개년 월간 추이(연도별 겹침)")
     t.add_argument("keywords", nargs="+", help='예: trend "로보락" "에어프라이어"')
     t.add_argument("--years", type=int, default=3)
+    t.add_argument("--weekly", action="store_true", help="월간 대신 주간(ISO 1~53주) 비율로 조회")
     t.add_argument("--out", default=None, metavar="OUT.json")
     t.set_defaults(func=cmd_trend)
 

@@ -15,7 +15,7 @@ from trendbot.envfile import load_dotenv
 from trendbot.naver_api import NaverApiError, NaverDataLabClient, TrendPoint, TrendSeries, _chunked
 from trendbot.pool import PoolConfig, PoolConfigError
 from trendbot.spike import compute_spike, rank_spikes
-from trendbot.yearly import yearly_overlay
+from trendbot.yearly import weekly_overlay, yearly_overlay
 
 
 class TestLoadDotenv(unittest.TestCase):
@@ -104,11 +104,28 @@ class TestYearlyOverlay(unittest.TestCase):
             TrendPoint(period="2025-01-01", ratio=20.0),
         ])
         overlay = yearly_overlay(series)
-        self.assertEqual(overlay["months"], list(range(1, 13)))
+        self.assertEqual(overlay["unit"], "month")
+        self.assertEqual(overlay["periods"], list(range(1, 13)))
         self.assertEqual(overlay["years"]["2024"][0], 10.0)
         self.assertEqual(overlay["years"]["2024"][1], 12.0)
         self.assertIsNone(overlay["years"]["2024"][2])  # 3월은 관측치 없음
         self.assertEqual(overlay["years"]["2025"][0], 20.0)
+
+
+class TestWeeklyOverlay(unittest.TestCase):
+    def test_pivots_by_iso_year_and_week(self):
+        series = TrendSeries(keyword="가습기", points=[
+            TrendPoint(period="2024-01-01", ratio=5.0),   # ISO 2024년 1주차
+            TrendPoint(period="2024-01-08", ratio=7.0),   # ISO 2024년 2주차
+            TrendPoint(period="2025-01-06", ratio=9.0),   # ISO 2025년 2주차
+        ])
+        overlay = weekly_overlay(series)
+        self.assertEqual(overlay["unit"], "week")
+        self.assertEqual(overlay["periods"], list(range(1, 54)))
+        self.assertEqual(overlay["years"]["2024"][0], 5.0)
+        self.assertEqual(overlay["years"]["2024"][1], 7.0)
+        self.assertIsNone(overlay["years"]["2024"][2])
+        self.assertEqual(overlay["years"]["2025"][1], 9.0)
 
 
 class TestPoolConfig(unittest.TestCase):

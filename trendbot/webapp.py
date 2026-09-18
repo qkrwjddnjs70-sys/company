@@ -24,21 +24,25 @@ from .envfile import load_dotenv
 from .naver_api import NaverApiError, NaverDataLabClient, date_n_weeks_ago, date_n_years_ago
 from .pool import PoolConfig, PoolConfigError
 from .spike import rank_spikes
-from .yearly import yearly_overlay
+from .yearly import weekly_overlay, yearly_overlay
 
 load_dotenv()
 
 MAX_KEYWORDS_PER_REQUEST = 5  # 데이터랩 API 호출 1회 한도(그룹=키워드 1개 고정)
+VALID_UNITS = {"month": yearly_overlay, "week": weekly_overlay}
 
 
-def get_trend(client: NaverDataLabClient, keywords: list[str], *, years: int) -> dict:
+def get_trend(client: NaverDataLabClient, keywords: list[str], *, years: int, unit: str = "month") -> dict:
+    if unit not in VALID_UNITS:
+        raise ValueError(f"unit은 {sorted(VALID_UNITS)} 중 하나여야 합니다: {unit!r}")
+    overlay_fn = VALID_UNITS[unit]
     keywords = keywords[:MAX_KEYWORDS_PER_REQUEST]
     start = date_n_years_ago(years).isoformat()
     end = date.today().isoformat()
-    series_map = client.search_trend(keywords, start_date=start, end_date=end, time_unit="month")
-    overlays = {kw: yearly_overlay(series_map[kw]) for kw in keywords if kw in series_map}
+    series_map = client.search_trend(keywords, start_date=start, end_date=end, time_unit=unit)
+    overlays = {kw: overlay_fn(series_map[kw]) for kw in keywords if kw in series_map}
     missing = [kw for kw in keywords if kw not in series_map]
-    return {"start": start, "end": end, "overlays": overlays, "missing": missing}
+    return {"start": start, "end": end, "unit": unit, "overlays": overlays, "missing": missing}
 
 
 def get_spikes(client: NaverDataLabClient, pool: PoolConfig) -> dict:
@@ -98,6 +102,10 @@ input{background:var(--panel);border:1px solid var(--line);color:var(--tx);paddi
 button.act{background:var(--accent);color:#08131f;border:0;padding:10px 18px;border-radius:8px;
            font-size:15px;cursor:pointer;margin-left:8px}
 button.act:disabled{background:var(--line);color:var(--tx2);cursor:not-allowed}
+.unitToggle{display:inline-flex;gap:6px;margin-left:12px;vertical-align:middle}
+.unitBtn{background:var(--panel);border:1px solid var(--line);color:var(--tx2);padding:9px 14px;
+         border-radius:8px;font-size:14px;cursor:pointer}
+.unitBtn.active{color:var(--tx);border-color:var(--accent);background:#1b2330}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin:10px 0}
 #status,#spStatus{color:var(--tx2);margin:8px 0;font-size:13px}
 table{width:100%;border-collapse:collapse;font-size:14px}
@@ -119,10 +127,16 @@ td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
 </div>
 
 <div id="trendView" class="view active">
-  <p class="sub">키워드를 입력하면 최근 3개년의 월별 검색 비율을 연도별로 겹쳐 보여준다
-  (연도 사이 계절성/성장 여부를 한눈에 비교).</p>
-  <form id="tf"><input id="kw" placeholder="예: 로봇청소기" required>
-  <button class="act" type="submit">조회</button></form>
+  <p class="sub">키워드를 입력하면 최근 3개년의 검색 비율을 연도별로 겹쳐 보여준다
+  (연도 사이 계절성/성장 여부를 한눈에 비교). 월간/주간 중 골라서 볼 수 있다.</p>
+  <form id="tf">
+    <input id="kw" placeholder="예: 로봇청소기" required>
+    <button class="act" type="submit">조회</button>
+    <span class="unitToggle">
+      <button type="button" class="unitBtn active" data-unit="month">월간</button>
+      <button type="button" class="unitBtn" data-unit="week">주간</button>
+    </span>
+  </form>
   <div id="status"></div>
   <div id="chartOut"></div>
 </div>
@@ -147,13 +161,16 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 
 const YEAR_COLORS = ['#64748b', '#5aa9ff', '#ffcf5c', '#c792ea', '#7ee787'];
 
-function drawYearlyChart(overlay) {
+function drawOverlayChart(overlay) {
   const years = Object.keys(overlay.years).sort();
+  const periods = overlay.periods;
+  const isWeek = overlay.unit === 'week';
   const W = 820, H = 300, padL = 40, padR = 16, padT = 16, padB = 28;
   const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = periods.length;
   let maxV = 1;
   years.forEach(y => overlay.years[y].forEach(v => { if (v !== null && v > maxV) maxV = v; }));
-  const x = m => padL + (m - 1) / 11 * plotW;
+  const x = idx => padL + idx / (n - 1) * plotW;
   const y = v => padT + plotH - (v / maxV) * plotH;
 
   let grid = '';
@@ -162,9 +179,11 @@ function drawYearlyChart(overlay) {
     grid += `<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="#2a323c" stroke-width="1"/>`;
     grid += `<text x="4" y="${yy+4}" font-size="11" fill="#a8b3bf">${Math.round(maxV*i/4)}</text>`;
   }
-  const monthLabels = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
-  monthLabels.forEach((m, i) => {
-    grid += `<text x="${x(i+1)}" y="${H-8}" font-size="11" fill="#a8b3bf" text-anchor="middle">${m}</text>`;
+  periods.forEach((p, i) => {
+    // 주간은 53개라 전부 라벨을 달면 겹치므로 4주 간격으로만 표시한다.
+    if (isWeek && i % 4 !== 0) return;
+    const label = isWeek ? (p + '주') : (p + '월');
+    grid += `<text x="${x(i)}" y="${H-8}" font-size="11" fill="#a8b3bf" text-anchor="middle">${label}</text>`;
   });
 
   let lines = '', legend = '';
@@ -172,17 +191,18 @@ function drawYearlyChart(overlay) {
     const color = YEAR_COLORS[i % YEAR_COLORS.length];
     const pts = overlay.years[yr];
     let path = '', started = false;
-    pts.forEach((v, mi) => {
+    pts.forEach((v, pi) => {
       if (v === null) { started = false; return; }
       const cmd = started ? 'L' : 'M';
-      path += `${cmd}${x(mi+1).toFixed(1)},${y(v).toFixed(1)} `;
+      path += `${cmd}${x(pi).toFixed(1)},${y(v).toFixed(1)} `;
       started = true;
     });
     lines += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5"/>`;
-    pts.forEach((v, mi) => {
+    pts.forEach((v, pi) => {
       if (v === null) return;
-      lines += `<circle cx="${x(mi+1).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3" fill="${color}">`
-             + `<title>${yr}년 ${mi+1}월: ${v.toFixed(1)}</title></circle>`;
+      const label = isWeek ? `${periods[pi]}주차` : `${periods[pi]}월`;
+      lines += `<circle cx="${x(pi).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${isWeek ? 2 : 3}" fill="${color}">`
+             + `<title>${yr}년 ${label}: ${v.toFixed(1)}</title></circle>`;
     });
     legend += `<span><span class="dot" style="background:${color}"></span>${yr}년</span>`;
   });
@@ -196,23 +216,39 @@ function drawYearlyChart(overlay) {
 const tf = document.getElementById('tf');
 const status = document.getElementById('status');
 const chartOut = document.getElementById('chartOut');
-tf.addEventListener('submit', async (e) => {
-  e.preventDefault();
+let currentUnit = 'month';
+
+document.querySelectorAll('.unitBtn').forEach(btn => btn.addEventListener('click', () => {
+  if (btn.dataset.unit === currentUnit) return;
+  document.querySelectorAll('.unitBtn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentUnit = btn.dataset.unit;
   const kw = document.getElementById('kw').value.trim();
-  if (!kw) return;
+  if (kw) loadTrend(kw);
+}));
+
+async function loadTrend(kw) {
   status.textContent = '조회 중...';
   chartOut.innerHTML = '';
   try {
-    const res = await fetch('/api/trend?keyword=' + encodeURIComponent(kw));
+    const res = await fetch('/api/trend?keyword=' + encodeURIComponent(kw) + '&unit=' + currentUnit);
     const data = await res.json();
     if (!res.ok) { status.textContent = '오류: ' + data.error; return; }
     const overlay = data.overlays[kw];
     if (!overlay || !Object.keys(overlay.years).length) {
       status.textContent = "'" + kw + "' 결과 없음(관측치 부족 또는 검색량 0)"; return;
     }
-    status.textContent = kw + ' — ' + data.start + ' ~ ' + data.end;
-    chartOut.innerHTML = drawYearlyChart(overlay);
+    const unitLabel = currentUnit === 'week' ? '주간' : '월간';
+    status.textContent = kw + ' — ' + unitLabel + ' — ' + data.start + ' ~ ' + data.end;
+    chartOut.innerHTML = drawOverlayChart(overlay);
   } catch (err) { status.textContent = '오류: ' + err; }
+}
+
+tf.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const kw = document.getElementById('kw').value.trim();
+  if (!kw) return;
+  await loadTrend(kw);
 });
 
 const spStatus = document.getElementById('spStatus');
@@ -272,7 +308,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": "keyword required"}, 400)
                     return
                 years = int(qs.get("years", "3"))
-                self._send_json(get_trend(self.client, [keyword], years=years))
+                unit = qs.get("unit", "month")
+                if unit not in VALID_UNITS:
+                    self._send_json({"error": f"unit은 {sorted(VALID_UNITS)} 중 하나여야 합니다"}, 400)
+                    return
+                self._send_json(get_trend(self.client, [keyword], years=years, unit=unit))
             elif parsed.path == "/api/spikes":
                 if self.pool is None:
                     self._send_json({"error": "config/trendbot.json 이 없습니다. "
