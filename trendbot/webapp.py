@@ -161,6 +161,25 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 
 const YEAR_COLORS = ['#64748b', '#5aa9ff', '#ffcf5c', '#c792ea', '#7ee787'];
 
+// ISO 주차(1~53) → 그 주의 월요일 날짜. "n월 m주차" 라벨을 만들기 위한 변환.
+function isoWeekMonday(year, week) {
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Dow = jan4.getUTCDay() || 7; // 월=1 ... 일=7
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - jan4Dow + 1);
+  const target = new Date(week1Monday);
+  target.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+  return target;
+}
+
+// "1월 2주차"처럼, 그 주가 속한 달과 달 안에서 몇 번째 주인지로 표시한다.
+function monthWeekLabel(year, week) {
+  const d = isoWeekMonday(Number(year), week);
+  const month = d.getUTCMonth() + 1;
+  const weekOfMonth = Math.ceil(d.getUTCDate() / 7);
+  return `${month}월 ${weekOfMonth}주차`;
+}
+
 function drawOverlayChart(overlay) {
   const years = Object.keys(overlay.years).sort();
   const periods = overlay.periods;
@@ -179,10 +198,11 @@ function drawOverlayChart(overlay) {
     grid += `<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="#2a323c" stroke-width="1"/>`;
     grid += `<text x="4" y="${yy+4}" font-size="11" fill="#a8b3bf">${Math.round(maxV*i/4)}</text>`;
   }
+  const axisRefYear = years[years.length - 1]; // 축 라벨은 최근 연도 달력 기준으로 통일해서 매긴다
   periods.forEach((p, i) => {
-    // 주간은 53개라 전부 라벨을 달면 겹치므로 4주 간격으로만 표시한다.
-    if (isWeek && i % 4 !== 0) return;
-    const label = isWeek ? (p + '주') : (p + '월');
+    // 주간은 53개인 데다 "n월 m주차"라 글자도 길어서, 5주 간격으로만 표시한다.
+    if (isWeek && i % 5 !== 0) return;
+    const label = isWeek ? monthWeekLabel(axisRefYear, p) : (p + '월');
     grid += `<text x="${x(i)}" y="${H-8}" font-size="11" fill="#a8b3bf" text-anchor="middle">${label}</text>`;
   });
 
@@ -200,7 +220,7 @@ function drawOverlayChart(overlay) {
     lines += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5"/>`;
     pts.forEach((v, pi) => {
       if (v === null) return;
-      const label = isWeek ? `${periods[pi]}주차` : `${periods[pi]}월`;
+      const label = isWeek ? monthWeekLabel(yr, periods[pi]) : `${periods[pi]}월`;
       lines += `<circle cx="${x(pi).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${isWeek ? 2 : 3}" fill="${color}">`
              + `<title>${yr}년 ${label}: ${v.toFixed(1)}</title></circle>`;
     });
