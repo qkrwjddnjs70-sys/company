@@ -330,6 +330,10 @@ python3 -m trendbot spikes
 python3 -m trendbot related "써큘레이터"
 ```
 
+**Windows에서는 `run_trendbot.bat`을 더블클릭하면** 최신 코드 받기(`git pull`) →
+기존에 켜져 있던 서버 종료(8766 포트) → 재실행까지 한 번에 해준다. 코드가
+업데이트될 때마다 명령어를 하나씩 칠 필요 없이 이 파일만 다시 실행하면 된다.
+
 `related` 출력 예:
 
 ```
