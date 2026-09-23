@@ -109,6 +109,9 @@ body{margin:0;background:var(--bg);color:var(--tx);font-family:'Noto Sans KR',sa
 .wrap{max-width:920px;margin:0 auto}
 h1{font-size:20px;margin-bottom:4px}
 .sub{color:var(--tx2);font-size:13px;margin:4px 0 16px}
+.period-note{background:#1b2330;border:1px solid var(--line);border-left:3px solid var(--accent);
+             border-radius:6px;padding:8px 12px;margin:-4px 0 16px}
+.period-note b{color:var(--tx)}
 .tabs{display:flex;gap:8px;margin-bottom:16px}
 .tab{background:var(--panel);border:1px solid var(--line);color:var(--tx2);padding:9px 16px;
      border-radius:8px;cursor:pointer;font-size:14px}
@@ -173,6 +176,13 @@ td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
   <p class="sub">"써큘레이터"처럼 넓은 키워드를 넣으면, "신일써큘레이터" "한일써큘레이터"
   같은 연관 키워드(브랜드·세부 상품군 등)를 월간 검색량이 많은 순으로 보여준다.
   데이터랩과는 다른 API(네이버 검색광고 키워드도구)를 쓴다 — 별도 인증정보가 필요.</p>
+  <p class="sub period-note">
+    <b>검색량 집계 기간</b> — "이번 달 1일~말일"처럼 달력 월 단위가 아니라,
+    <b>조회하는 시점 기준으로 매일 굴러가는 최근 30일</b>의 실제 검색 횟수다(평균이 아님).
+    그래서 오늘과 내일 조회한 값이 하루이틀 차이로 미세하게 달라질 수 있다 — 정상이다.
+    네이버가 정확히 "몇 시 기준, 며칠 전까지"인지는 공식 문서로 못 박아두지 않아,
+    이 설명은 실무에서 통용되는 이해이지 네이버 공식 확인 사항은 아니다.
+  </p>
   <form id="rf"><input id="rkw" placeholder="예: 써큘레이터" required>
   <button class="act" type="submit">조회</button></form>
   <div id="relStatus"></div>
