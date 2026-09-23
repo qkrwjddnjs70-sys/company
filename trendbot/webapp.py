@@ -46,7 +46,15 @@ def get_trend(client: NaverDataLabClient, keywords: list[str], *, years: int, un
     return {"start": start, "end": end, "unit": unit, "overlays": overlays, "missing": missing}
 
 
-def get_spikes(client: NaverDataLabClient, pool: PoolConfig) -> dict:
+def _primary_category(labels: list[str]) -> str:
+    """표시용 대표 카테고리 — '관심 키워드'보다 실제 카테고리 이름을 우선한다."""
+    cats = [l for l in labels if l != "관심 키워드"]
+    if cats:
+        return cats[0]
+    return labels[0] if labels else "(미분류)"
+
+
+def get_spikes(client: NaverDataLabClient, pool: PoolConfig, *, show_all: bool = False) -> dict:
     keywords = pool.all_keywords()
     if not keywords:
         return {"results": [], "pool_size": 0,
@@ -56,23 +64,40 @@ def get_spikes(client: NaverDataLabClient, pool: PoolConfig) -> dict:
     end = date.today().isoformat()
     series_map = client.search_trend(keywords, start_date=start, end_date=end, time_unit="week")
     keyword_ratios = {kw: s.ratios() for kw, s in series_map.items()}
+    labels_map = pool.keyword_labels()
+    # show_all=True면 문턱값을 무시하고 데이터가 있는 후보 전부를 돌려준다.
+    # (사용자가 "왜 2개밖에 안 나오냐"고 물은 건 30% 문턱 밑의 키워드가 안 보여서였다.)
     results = rank_spikes(
         keyword_ratios,
         recent_weeks=pool.spike["recent_weeks"],
         baseline_weeks=pool.spike["baseline_weeks"],
-        min_growth_pct=pool.spike["min_growth_pct"],
-        min_ratio_floor=pool.spike["min_ratio_floor"],
-        keyword_labels=pool.keyword_labels(),
+        min_growth_pct=-1e9 if show_all else pool.spike["min_growth_pct"],
+        min_ratio_floor=0.0 if show_all else pool.spike["min_ratio_floor"],
+        keyword_labels=labels_map,
     )
+    if show_all:
+        # 카테고리별로 묶어 보기 좋게: 카테고리 이름 → 그 안에서 급상승 정도순.
+        results.sort(key=lambda r: (_primary_category(r.labels), -r.sort_key))
+    # 문턱값은 항상 pool 설정 기준으로 판정한다 — show_all이어도 "급상승 여부" 배지는 그대로 보여준다.
+    min_growth = pool.spike["min_growth_pct"]
+    min_floor = pool.spike["min_ratio_floor"]
+
+    def _is_spike(r) -> bool:
+        if r.recent_avg < min_floor:
+            return False
+        return r.is_new or (r.growth_pct is not None and r.growth_pct >= min_growth)
+
     return {
         "pool_size": len(keywords),
         "params": pool.spike,
+        "show_all": show_all,
         "results": [
             {
-                "keyword": r.keyword, "baseline_avg": round(r.baseline_avg, 2),
+                "keyword": r.keyword, "category": _primary_category(r.labels),
+                "baseline_avg": round(r.baseline_avg, 2),
                 "recent_avg": round(r.recent_avg, 2),
                 "growth_pct": round(r.growth_pct, 1) if r.growth_pct is not None else None,
-                "is_new": r.is_new, "labels": r.labels,
+                "is_new": r.is_new, "is_spike": _is_spike(r), "labels": r.labels,
                 "sparkline": keyword_ratios.get(r.keyword, []),
             }
             for r in results
@@ -134,6 +159,10 @@ td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
 .badge.up{background:rgba(255,138,92,.16);color:var(--up)}
 .badge.new{background:rgba(199,146,234,.18);color:var(--new)}
+.badge.flat{background:rgba(168,179,191,.12);color:var(--tx2)}
+.checkLabel{display:inline-flex;align-items:center;gap:6px;margin-left:12px;color:var(--tx2);font-size:13px}
+.catHeading{color:var(--tx);font-size:14px;font-weight:600;margin:18px 0 6px}
+.catHeading:first-child{margin-top:0}
 .tag{display:inline-block;background:#1b2330;border:1px solid var(--line);color:var(--tx2);
      border-radius:6px;padding:1px 7px;font-size:11px;margin:0 4px 4px 0}
 .legend{display:flex;gap:16px;margin-top:8px;font-size:13px;color:var(--tx2)}
@@ -168,6 +197,7 @@ td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
   튄 것을 순위로 보여준다. 네이버가 실시간 급상승 검색어 API를 제공하지 않아,
   후보군은 이 설정 파일 안에서만 찾을 수 있다는 점을 참고.</p>
   <button class="act" id="loadSpikes">급상승 키워드 불러오기</button>
+  <label class="checkLabel"><input type="checkbox" id="showAllSpikes"> 문턱값 상관없이 전체 후보를 카테고리별로 다 보기</label>
   <div id="spStatus"></div>
   <div id="spikeOut"></div>
 </div>
@@ -312,28 +342,61 @@ tf.addEventListener('submit', async (e) => {
 
 const spStatus = document.getElementById('spStatus');
 const spikeOut = document.getElementById('spikeOut');
+
+function spikeBadge(r) {
+  if (r.is_new) return '<span class="badge new">신규 급증</span>';
+  if (r.growth_pct === null) return '<span class="badge flat">-</span>';
+  const cls = r.is_spike ? 'up' : 'flat';
+  const sign = r.growth_pct >= 0 ? '+' : '';
+  return `<span class="badge ${cls}">${sign}${r.growth_pct}%</span>`;
+}
+
+function spikeRow(r) {
+  const tags = r.labels.map(l => `<span class="tag">${l}</span>`).join('');
+  return `<tr><td>${r.keyword}${tags ? '<br>'+tags : ''}</td><td>${spikeBadge(r)}</td>
+    <td>${r.recent_avg}</td><td>${r.baseline_avg}</td></tr>`;
+}
+
+function spikeTable(rows) {
+  return `<table><thead><tr><th>키워드</th><th>변화</th><th>최근 평균</th><th>이전 평균</th></tr></thead>
+    <tbody>${rows.map(spikeRow).join('')}</tbody></table>`;
+}
+
 document.getElementById('loadSpikes').addEventListener('click', async () => {
+  const showAll = document.getElementById('showAllSpikes').checked;
   spStatus.textContent = '후보 키워드 조회 중... (키워드 수에 따라 시간이 걸릴 수 있음)';
   spikeOut.innerHTML = '';
   try {
-    const res = await fetch('/api/spikes');
+    const res = await fetch('/api/spikes' + (showAll ? '?all=1' : ''));
     const data = await res.json();
     if (!res.ok || data.error) { spStatus.textContent = '오류: ' + (data.error || res.status); return; }
-    spStatus.textContent = `후보 ${data.pool_size}개 중 급상승 ${data.results.length}건 `
-      + `(최근 ${data.params.recent_weeks}주 vs 직전 ${data.params.baseline_weeks}주, `
-      + `기준 증가율 +${data.params.min_growth_pct}% 이상)`;
+    const spikeCount = data.results.filter(r => r.is_spike).length;
+    if (showAll) {
+      spStatus.textContent = `등록된 후보 ${data.pool_size}개 중 데이터 확인된 ${data.results.length}개 — `
+        + `그중 급상승 기준(+${data.params.min_growth_pct}% 이상) 충족 ${spikeCount}건 (카테고리별 정렬)`;
+    } else {
+      spStatus.textContent = `후보 ${data.pool_size}개 중 급상승 ${data.results.length}건 `
+        + `(최근 ${data.params.recent_weeks}주 vs 직전 ${data.params.baseline_weeks}주, `
+        + `기준 증가율 +${data.params.min_growth_pct}% 이상 — 전체를 보려면 위 체크박스를 켜세요)`;
+    }
     if (!data.results.length) { spikeOut.innerHTML = ''; return; }
-    const rows = data.results.map(r => {
-      const badge = r.is_new
-        ? '<span class="badge new">신규 급증</span>'
-        : `<span class="badge up">+${r.growth_pct}%</span>`;
-      const tags = r.labels.map(l => `<span class="tag">${l}</span>`).join('');
-      return `<tr><td>${r.keyword}${tags ? '<br>'+tags : ''}</td><td>${badge}</td>
-        <td>${r.recent_avg}</td><td>${r.baseline_avg}</td></tr>`;
-    }).join('');
-    spikeOut.innerHTML = `<div class="panel"><table>
-      <thead><tr><th>키워드</th><th>변화</th><th>최근 평균</th><th>이전 평균</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+
+    if (!showAll) {
+      spikeOut.innerHTML = `<div class="panel">${spikeTable(data.results)}</div>`;
+      return;
+    }
+    // 전체 보기: 카테고리별로 묶어서 섹션을 나눈다 (백엔드가 이미 카테고리순으로 정렬해 준다).
+    let html = '<div class="panel">';
+    let currentCat = null;
+    let bucket = [];
+    const flush = () => { if (bucket.length) html += `<div class="catHeading">${currentCat}</div>${spikeTable(bucket)}`; };
+    for (const r of data.results) {
+      if (r.category !== currentCat) { flush(); currentCat = r.category; bucket = []; }
+      bucket.push(r);
+    }
+    flush();
+    html += '</div>';
+    spikeOut.innerHTML = html;
   } catch (err) { spStatus.textContent = '오류: ' + err; }
 });
 
@@ -405,7 +468,8 @@ class Handler(BaseHTTPRequestHandler):
                                                "config/trendbot.example.json 을 복사해 채우세요.",
                                       "results": [], "pool_size": 0}, 200)
                     return
-                self._send_json(get_spikes(self.client, self.pool))
+                show_all = qs.get("all", "").strip() not in ("", "0", "false")
+                self._send_json(get_spikes(self.client, self.pool, show_all=show_all))
             elif parsed.path == "/api/related":
                 keyword = qs.get("keyword", "").strip()
                 if not keyword:

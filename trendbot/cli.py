@@ -79,19 +79,26 @@ def cmd_spikes(args) -> int:
         return 1
 
     keyword_ratios = {kw: s.ratios() for kw, s in series_map.items()}
+    keyword_labels = pool.keyword_labels()
     results = rank_spikes(
         keyword_ratios,
         recent_weeks=pool.spike["recent_weeks"],
         baseline_weeks=pool.spike["baseline_weeks"],
-        min_growth_pct=pool.spike["min_growth_pct"],
-        min_ratio_floor=pool.spike["min_ratio_floor"],
-        keyword_labels=pool.keyword_labels(),
+        min_growth_pct=-1e9 if args.all else pool.spike["min_growth_pct"],
+        min_ratio_floor=0.0 if args.all else pool.spike["min_ratio_floor"],
+        keyword_labels=keyword_labels,
     )
+    if args.all:
+        def _cat(labels: list[str]) -> str:
+            cats = [l for l in labels if l != "관심 키워드"]
+            return cats[0] if cats else (labels[0] if labels else "(미분류)")
+        results.sort(key=lambda r: (_cat(r.labels), -r.sort_key))
 
-    print(f"\n■ 급상승 키워드 — 후보 {len(keywords)}개 중 {len(results)}건 (최근 {pool.spike['recent_weeks']}주 "
+    label = "등록된 후보 전체(카테고리별)" if args.all else "급상승 키워드"
+    print(f"\n■ {label} — 후보 {len(keywords)}개 중 {len(results)}건 (최근 {pool.spike['recent_weeks']}주 "
           f"vs 직전 {pool.spike['baseline_weeks']}주)")
     for r in results:
-        growth = "신규 급증" if r.is_new else f"+{r.growth_pct:.0f}%"
+        growth = "신규 급증" if r.is_new else (f"+{r.growth_pct:.0f}%" if r.growth_pct is not None else "-")
         labels = ", ".join(r.labels)
         print(f"  {growth:>10s}  {r.keyword:<20s} 최근 {r.recent_avg:5.1f} / 이전 {r.baseline_avg:5.1f}  [{labels}]")
 
@@ -154,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("spikes", help="등록된 후보 키워드 중 급상승 탐지")
     s.add_argument("--config", default=None, help="설정 파일 경로 (기본 config/trendbot.json)")
+    s.add_argument("--all", action="store_true",
+                   help="증가율 문턱값 없이 데이터가 있는 후보 전체를 카테고리별로 출력")
     s.add_argument("--out", default=None, metavar="OUT.json")
     s.set_defaults(func=cmd_spikes)
 
