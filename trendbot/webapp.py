@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .envfile import load_dotenv
 from .naver_api import NaverApiError, NaverDataLabClient, date_n_weeks_ago, date_n_years_ago
 from .pool import PoolConfig, PoolConfigError
+from .searchad_api import SearchAdClient, SearchAdError, rank_related
 from .spike import rank_spikes
 from .yearly import weekly_overlay, yearly_overlay
 
@@ -79,6 +80,23 @@ def get_spikes(client: NaverDataLabClient, pool: PoolConfig) -> dict:
     }
 
 
+def get_related(client: SearchAdClient, keyword: str, *, top: int = 20) -> dict:
+    related = client.related_keywords([keyword])
+    ranked = rank_related(related, top=top)
+    return {
+        "keyword": keyword,
+        "results": [
+            {
+                "keyword": r.keyword,
+                "monthly_pc": r.monthly_pc, "pc_is_low": r.pc_is_low,
+                "monthly_mobile": r.monthly_mobile, "mobile_is_low": r.mobile_is_low,
+                "monthly_total": r.monthly_total,
+            }
+            for r in ranked
+        ],
+    }
+
+
 INDEX_HTML = """<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -124,6 +142,7 @@ td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
 <div class="tabs">
   <div class="tab active" data-view="trendView">① 키워드 추이 조회</div>
   <div class="tab" data-view="spikeView">② 급상승 키워드 발견</div>
+  <div class="tab" data-view="relatedView">③ 브랜드/세부 비교</div>
 </div>
 
 <div id="trendView" class="view active">
@@ -148,6 +167,16 @@ td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
   <button class="act" id="loadSpikes">급상승 키워드 불러오기</button>
   <div id="spStatus"></div>
   <div id="spikeOut"></div>
+</div>
+
+<div id="relatedView" class="view">
+  <p class="sub">"써큘레이터"처럼 넓은 키워드를 넣으면, "신일써큘레이터" "한일써큘레이터"
+  같은 연관 키워드(브랜드·세부 상품군 등)를 월간 검색량이 많은 순으로 보여준다.
+  데이터랩과는 다른 API(네이버 검색광고 키워드도구)를 쓴다 — 별도 인증정보가 필요.</p>
+  <form id="rf"><input id="rkw" placeholder="예: 써큘레이터" required>
+  <button class="act" type="submit">조회</button></form>
+  <div id="relStatus"></div>
+  <div id="relatedOut"></div>
 </div>
 
 </div>
@@ -297,6 +326,32 @@ document.getElementById('loadSpikes').addEventListener('click', async () => {
       <tbody>${rows}</tbody></table></div>`;
   } catch (err) { spStatus.textContent = '오류: ' + err; }
 });
+
+const rf = document.getElementById('rf');
+const relStatus = document.getElementById('relStatus');
+const relatedOut = document.getElementById('relatedOut');
+rf.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const kw = document.getElementById('rkw').value.trim();
+  if (!kw) return;
+  relStatus.textContent = '조회 중...';
+  relatedOut.innerHTML = '';
+  try {
+    const res = await fetch('/api/related?keyword=' + encodeURIComponent(kw));
+    const data = await res.json();
+    if (!res.ok) { relStatus.textContent = '오류: ' + data.error; return; }
+    if (!data.results.length) { relStatus.textContent = "'" + kw + "' 연관 키워드 없음"; return; }
+    relStatus.textContent = "'" + kw + "' 연관 키워드 — 월간 검색량(PC+모바일) 순위";
+    const fmt = (v, low) => low ? '&lt;10' : v.toLocaleString();
+    const rows = data.results.map(r => `<tr><td>${r.keyword}</td>
+      <td>${fmt(r.monthly_pc, r.pc_is_low)}</td>
+      <td>${fmt(r.monthly_mobile, r.mobile_is_low)}</td>
+      <td><b>${r.monthly_total.toLocaleString()}</b></td></tr>`).join('');
+    relatedOut.innerHTML = `<div class="panel"><table>
+      <thead><tr><th>연관 키워드</th><th>PC 검색량</th><th>모바일 검색량</th><th>합계</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  } catch (err) { relStatus.textContent = '오류: ' + err; }
+});
 </script>
 </body></html>"""
 
@@ -304,6 +359,7 @@ document.getElementById('loadSpikes').addEventListener('click', async () => {
 class Handler(BaseHTTPRequestHandler):
     client: NaverDataLabClient  # set by run()
     pool: PoolConfig | None  # set by run() — 없으면 /api/spikes가 안내 메시지를 준다
+    searchad_client: SearchAdClient  # set by run()
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -340,9 +396,16 @@ class Handler(BaseHTTPRequestHandler):
                                       "results": [], "pool_size": 0}, 200)
                     return
                 self._send_json(get_spikes(self.client, self.pool))
+            elif parsed.path == "/api/related":
+                keyword = qs.get("keyword", "").strip()
+                if not keyword:
+                    self._send_json({"error": "keyword required"}, 400)
+                    return
+                top = int(qs.get("top", "20"))
+                self._send_json(get_related(self.searchad_client, keyword, top=top))
             else:
                 self._send(404, b"not found", "text/plain")
-        except NaverApiError as e:
+        except (NaverApiError, SearchAdError) as e:
             self._send_json({"error": str(e)}, 502)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
@@ -355,6 +418,7 @@ class Handler(BaseHTTPRequestHandler):
 def run(host: str = "127.0.0.1", port: int = 8766) -> None:
     client = NaverDataLabClient()
     Handler.client = client
+    Handler.searchad_client = SearchAdClient()
     try:
         Handler.pool = PoolConfig.load()
     except PoolConfigError:

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from trendbot.envfile import load_dotenv
 from trendbot.naver_api import NaverApiError, NaverDataLabClient, TrendPoint, TrendSeries, _chunked
 from trendbot.pool import PoolConfig, PoolConfigError
+from trendbot.searchad_api import RelatedKeyword, SearchAdClient, SearchAdError, _parse_count, rank_related
 from trendbot.spike import compute_spike, rank_spikes
 from trendbot.yearly import weekly_overlay, yearly_overlay
 
@@ -210,6 +211,74 @@ class TestNaverDataLabClient(unittest.TestCase):
             self.client.search_trend(["가습기"], start_date="2024-01-01", end_date="2024-12-01")
             self.client.search_trend(["가습기"], start_date="2024-01-01", end_date="2024-12-01")
             self.assertEqual(m.call_count, 1)  # 두 번째는 캐시로 응답
+
+
+class TestParseCount(unittest.TestCase):
+    def test_numeric_string(self):
+        self.assertEqual(_parse_count("1,234"), (1234, False))
+
+    def test_low_volume_marker(self):
+        self.assertEqual(_parse_count("< 10"), (0, True))
+
+    def test_plain_int(self):
+        self.assertEqual(_parse_count(500), (500, False))
+
+
+class TestRankRelated(unittest.TestCase):
+    def test_sorts_by_total_descending_and_truncates(self):
+        keywords = [
+            RelatedKeyword(keyword="A", monthly_pc=10, monthly_mobile=10),   # 20
+            RelatedKeyword(keyword="B", monthly_pc=100, monthly_mobile=100),  # 200
+            RelatedKeyword(keyword="C", monthly_pc=50, monthly_mobile=0),     # 50
+        ]
+        ranked = rank_related(keywords, top=2)
+        self.assertEqual([r.keyword for r in ranked], ["B", "C"])
+
+
+class TestSearchAdClient(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.client = SearchAdClient(
+            api_key="key", secret_key="secret", customer_id="cust123",
+            cache_dir=self.tmpdir, rate_limit_sec=0.0,
+        )
+
+    def test_missing_credentials_raises(self):
+        client = SearchAdClient(api_key="", secret_key="", customer_id="", cache_dir=None)
+        with self.assertRaises(SearchAdError):
+            client.related_keywords(["써큘레이터"])
+
+    def test_signature_matches_hmac_sha256_of_timestamp_method_uri(self):
+        import base64
+        import hashlib
+        import hmac
+
+        headers = self.client._headers("GET", "/keywordstool")
+        timestamp = headers["X-Timestamp"]
+        message = f"{timestamp}.GET./keywordstool".encode("utf-8")
+        expected = base64.b64encode(hmac.new(b"secret", message, hashlib.sha256).digest()).decode()
+        self.assertEqual(headers["X-Signature"], expected)
+        self.assertEqual(headers["X-API-KEY"], "key")
+        self.assertEqual(headers["X-Customer"], "cust123")
+
+    def test_related_keywords_parses_low_volume_marker(self):
+        response = {"keywordList": [
+            {"relKeyword": "신일써큘레이터", "monthlyPcQcCnt": 1200, "monthlyMobileQcCnt": "< 10"},
+        ]}
+        fake = mock.Mock()
+        fake.read.return_value = json.dumps(response).encode("utf-8")
+        fake.__enter__ = lambda s: fake
+        fake.__exit__ = lambda s, *a: False
+        with mock.patch("urllib.request.urlopen", return_value=fake) as m:
+            out = self.client.related_keywords(["써큘레이터"])
+            req = m.call_args[0][0]
+            self.assertIn("hintKeywords=", req.full_url)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].keyword, "신일써큘레이터")
+        self.assertEqual(out[0].monthly_pc, 1200)
+        self.assertFalse(out[0].pc_is_low)
+        self.assertEqual(out[0].monthly_mobile, 0)
+        self.assertTrue(out[0].mobile_is_low)
 
 
 if __name__ == "__main__":

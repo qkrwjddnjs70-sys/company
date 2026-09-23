@@ -2,6 +2,7 @@
 
   python3 -m trendbot trend "로보락"                  # 3개년 월간 추이(연도 겹침)
   python3 -m trendbot spikes                          # 등록된 후보 키워드 중 급상승 찾기
+  python3 -m trendbot related "써큘레이터"            # 연관 키워드(브랜드 등) + 검색량 순위
   python3 -m trendbot webapp                          # 웹 UI 실행
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from datetime import date
 from .envfile import load_dotenv
 from .naver_api import NaverApiError, NaverDataLabClient, date_n_weeks_ago, date_n_years_ago
 from .pool import PoolConfig, PoolConfigError
+from .searchad_api import SearchAdClient, SearchAdError, rank_related
 from .spike import rank_spikes
 from .yearly import weekly_overlay, yearly_overlay
 
@@ -105,6 +107,33 @@ def cmd_spikes(args) -> int:
     return 0
 
 
+def cmd_related(args) -> int:
+    client = SearchAdClient()
+    try:
+        related = client.related_keywords([args.keyword])
+    except SearchAdError as e:
+        print(f"[실패] {e}", file=sys.stderr)
+        return 1
+
+    ranked = rank_related(related, top=args.top)
+    print(f"\n■ '{args.keyword}' 연관 키워드 — 월간 검색량(PC+모바일) 순위 상위 {len(ranked)}건")
+    for r in ranked:
+        pc = "<10" if r.pc_is_low else f"{r.monthly_pc:,}"
+        mobile = "<10" if r.mobile_is_low else f"{r.monthly_mobile:,}"
+        print(f"  {r.keyword:<24s} PC {pc:>8s}  모바일 {mobile:>8s}  합계 {r.monthly_total:>8,}")
+
+    if args.out:
+        payload = [
+            {"keyword": r.keyword, "monthly_pc": r.monthly_pc, "monthly_mobile": r.monthly_mobile,
+             "monthly_total": r.monthly_total, "pc_is_low": r.pc_is_low, "mobile_is_low": r.mobile_is_low}
+            for r in ranked
+        ]
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"\n저장: {args.out}")
+    return 0
+
+
 def cmd_webapp(args) -> int:
     from .webapp import run
 
@@ -128,7 +157,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default=None, metavar="OUT.json")
     s.set_defaults(func=cmd_spikes)
 
-    w = sub.add_parser("webapp", help="웹 UI 실행 (키워드 추이 + 급상승 대시보드)")
+    r = sub.add_parser("related", help='연관 키워드(브랜드 등) + 월간 검색량 순위 (예: related "써큘레이터")')
+    r.add_argument("keyword")
+    r.add_argument("--top", type=int, default=20)
+    r.add_argument("--out", default=None, metavar="OUT.json")
+    r.set_defaults(func=cmd_related)
+
+    w = sub.add_parser("webapp", help="웹 UI 실행 (키워드 추이 + 급상승 대시보드 + 연관 키워드)")
     w.add_argument("--host", default="127.0.0.1")
     w.add_argument("--port", type=int, default=8766)
     w.set_defaults(func=cmd_webapp)

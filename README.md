@@ -265,7 +265,7 @@ tests/             112개 회귀 테스트 (전부 네트워크 없이 실행)
 올라오는 걸 먼저 캐치해서 홈쇼핑 소싱에 활용하기 위한 도구. 네이버 데이터랩
 검색어트렌드 오픈API를 쓴다.
 
-두 가지 기능:
+세 가지 기능:
 
 1. **키워드 추이 조회** — 키워드를 입력하면 최근 3개년 검색 비율을 연도별로 겹쳐서
    보여준다(계절성·성장 여부를 한눈에 비교). 웹 UI에서 **월간/주간** 두 단위 중
@@ -273,6 +273,10 @@ tests/             112개 회귀 테스트 (전부 네트워크 없이 실행)
 2. **급상승 키워드 발견** — `config/trendbot.json`에 등록해 둔 후보 키워드(카테고리별
    시드 키워드 + 직접 등록한 관심 키워드) 중, 최근 검색량이 평소보다 튄 것을 순위로
    보여준다.
+3. **브랜드/세부 비교** — "써큘레이터"처럼 넓은 키워드를 넣으면 "신일써큘레이터"
+   "한일써큘레이터"처럼 브랜드가 붙은 연관 키워드와 각각의 월간 검색량(PC/모바일)을
+   순위로 보여준다. 데이터랩이 아니라 **네이버 검색광고(SearchAd) 키워드도구 API**를
+   쓴다 — 절대 검색량을 주는 유일한 API라 브랜드 간 비교에 적합하다.
 
 > ⚠️ **네이버는 실시간 급상승 검색어 API를 2021년에 폐지했다.** 그래서 (2)는
 > "네이버가 모르는 검색어를 알려주는" 기능이 아니라, 미리 등록해 둔 후보 키워드
@@ -287,28 +291,48 @@ cp config/trendbot.example.json config/trendbot.json   # 카테고리·관심 �
 cp .env.example .env                                   # API 키 채우기 (.env는 git에 올라가지 않음)
 ```
 
-`.env` 파일:
+`.env` 파일 — **인증 정보가 두 종류, 서로 다른 계정에서 발급받는다**:
 
 ```
+# ①②번 탭용 — developers.naver.com
 TRENDBOT_NAVER_CLIENT_ID=발급받은 클라이언트 ID
 TRENDBOT_NAVER_CLIENT_SECRET=발급받은 클라이언트 시크릿
+
+# ③번 탭용 — searchad.naver.com (완전히 별도 계정/키)
+TRENDBOT_SEARCHAD_API_KEY=발급받은 액세스라이선스
+TRENDBOT_SEARCHAD_SECRET_KEY=발급받은 비밀키
+TRENDBOT_SEARCHAD_CUSTOMER_ID=고객ID(CUSTOMER_ID)
 ```
 
-API 키는 [developers.naver.com](https://developers.naver.com) → 애플리케이션 등록 →
-'검색' API 사용 신청으로 발급받는다(데이터랩 검색어트렌드는 같은 키로 바로 쓸 수 있다).
+- 데이터랩 키: [developers.naver.com](https://developers.naver.com) → 애플리케이션 등록 →
+  '검색' API 사용 신청 (같은 키로 데이터랩 검색어트렌드도 바로 쓸 수 있다).
+- 검색광고 키: [searchad.naver.com](https://searchad.naver.com) 로그인 → 도구 →
+  API 사용 관리 → 서비스 신청. 광고 계정이 필요하며, 인증 방식도 HMAC-SHA256
+  서명이라 완전히 다른 시스템이다.
+
 `cli.py`/`webapp.py`가 실행 시 `.env`를 자동으로 읽는다(이미 `export`로 설정된
-환경변수가 있으면 그 값이 우선한다).
+환경변수가 있으면 그 값이 우선한다). 두 인증 정보 중 하나만 채워도 해당 탭은
+바로 동작한다 — ③번만 안 쓸 거면 검색광고 키는 비워둬도 된다.
 
 ## 사용
 
 ```bash
-# 웹 UI — 키워드 추이 + 급상승 대시보드
+# 웹 UI — 키워드 추이 + 급상승 대시보드 + 브랜드 비교
 python3 -m trendbot webapp
 # → http://127.0.0.1:8766
 
 # CLI로 바로 조회
 python3 -m trendbot trend "로봇청소기"
 python3 -m trendbot spikes
+python3 -m trendbot related "써큘레이터"
+```
+
+`related` 출력 예:
+
+```
+■ '써큘레이터' 연관 키워드 — 월간 검색량(PC+모바일) 순위 상위 20건
+  신일써큘레이터                PC    1,200  모바일    8,900  합계    10,100
+  한일써큘레이터                PC      800  모바일    5,200  합계     6,000
 ```
 
 `spikes` 출력 예:
@@ -333,22 +357,26 @@ python3 -m trendbot spikes
 ```
 trendbot/
   naver_api.py    데이터랩 검색어트렌드 API 클라이언트 (stdlib만 사용, 일 단위 캐시)
+  searchad_api.py 검색광고 키워드도구 API 클라이언트 (HMAC-SHA256 서명, 일 단위 캐시)
   pool.py         후보 키워드 풀 (카테고리 시드 + 관심 키워드) 설정 로딩
   spike.py        급상승 판정 (최근 vs 직전 평균 비교)
-  yearly.py       월간 추이 → 연도별 겹침 피벗
+  yearly.py       월간/주간 추이 → 연도별 겹침 피벗
   webapp.py       다크 테마 단일 페이지 웹 UI (Flask 없이 stdlib http.server)
-  cli.py          trend / spikes / webapp 명령
+  cli.py          trend / spikes / related / webapp 명령
 config/
   trendbot.example.json   카테고리·관심 키워드·스파이크 임계값 예시
-tests/test_trendbot.py    14개 회귀 테스트 (네이버 API는 mock, 네트워크 없이 실행)
+tests/test_trendbot.py    회귀 테스트 (네이버 API는 전부 mock, 네트워크 없이 실행)
 ```
 
 ## 한계
 
 - **급상승은 후보 키워드 안에서만** 찾는다 — 위 경고 참고.
-- **`ratio`는 상대값이다.** 데이터랩 API는 구간 내 최대치를 100으로 둔 상대 검색
-  비율만 준다(절대 검색량 아님). 그래서 서로 다른 키워드의 `ratio`를 그대로 비교해
-  "A가 B보다 검색량이 많다"고 말할 수는 없다 — 증가율(추이)만 비교에 쓴다.
-- **하루 호출 한도.** 데이터랩 API는 하루 호출 한도가 있다. 후보 키워드가 많을수록
+- **데이터랩의 `ratio`는 상대값이다.** 구간 내 최대치를 100으로 둔 상대 검색 비율만
+  준다(절대 검색량 아님). 그래서 서로 다른 키워드의 `ratio`를 그대로 비교해 "A가 B보다
+  검색량이 많다"고 말할 수는 없다 — 증가율(추이)만 비교에 쓴다. 절대 검색량으로
+  브랜드를 비교하고 싶으면 ③번 "브랜드/세부 비교"(검색광고 API)를 쓴다.
+- **검색광고 API의 "< 10"**은 정확한 값을 안 준다(0~9 중 하나). 순위를 매길 때는
+  과대평가하지 않도록 0으로 취급한다 — 아주 작은 검색량끼리의 순서는 부정확할 수 있다.
+- **하루 호출 한도.** 두 API 모두 하루 호출 한도가 있다. 후보 키워드가 많을수록
   `spikes` 호출 1회가 여러 API 콜로 나뉘므로(그룹=키워드 1개 고정, 1콜당 5개),
   같은 날 재조회는 캐시(`.cache/trendbot`)로 아낀다.

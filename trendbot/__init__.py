@@ -12,6 +12,7 @@
 from .envfile import load_dotenv
 from .naver_api import NaverDataLabClient, NaverApiError, TrendPoint, TrendSeries
 from .pool import PoolConfig, Category
+from .searchad_api import RelatedKeyword, SearchAdClient, SearchAdError, rank_related
 from .spike import SpikeResult, compute_spike, rank_spikes
 from .yearly import yearly_overlay, weekly_overlay
 
@@ -20,6 +21,7 @@ __all__ = [
     "load_dotenv",
     "NaverDataLabClient", "NaverApiError", "TrendPoint", "TrendSeries",
     "PoolConfig", "Category",
+    "SearchAdClient", "SearchAdError", "RelatedKeyword", "rank_related",
     "SpikeResult", "compute_spike", "rank_spikes",
     "yearly_overlay", "weekly_overlay",
 ]
